@@ -1,8 +1,5 @@
 add_subdirectory("common")
 add_subdirectory("CPE")
-add_subdirectory("CVE")
-add_subdirectory("CVSS")
-add_subdirectory("CVRF")
 add_subdirectory("DS")
 add_subdirectory("OVAL")
 if(ENABLE_SCE)
@@ -15,9 +12,6 @@ add_subdirectory("XCCDF_POLICY")
 set(OBJECTS_TO_LINK_AGAINST
 	$<TARGET_OBJECTS:common_object>
 	$<TARGET_OBJECTS:cpe_object>
-	$<TARGET_OBJECTS:cve_object>
-	$<TARGET_OBJECTS:cvrf_object>
-	$<TARGET_OBJECTS:cvss_object>
 	$<TARGET_OBJECTS:ds_object>
 	$<TARGET_OBJECTS:oscapsource_object>
 	$<TARGET_OBJECTS:oval_object>
@@ -81,7 +75,7 @@ set_target_properties(openscap PROPERTIES
 	C_VISIBILITY_PRESET hidden
 )
 
-target_link_libraries(openscap ${LIBXML2_LIBRARIES} ${LIBXSLT_LIBRARIES} ${XMLSEC_LIBRARIES} ${OPENSSL_LIBRARIES} ${LIBXSLT_EXSLT_LIBRARIES} ${PCRE_LIBRARIES} ${CURL_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(openscap ${LIBXML2_LIBRARIES} ${LIBXSLT_LIBRARIES} ${XMLSEC_LIBRARIES} ${OPENSSL_LIBRARIES} ${LIBXSLT_EXSLT_LIBRARIES} ${PCRE2_LIBRARIES} ${CURL_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 if (BZIP2_FOUND)
 	target_link_libraries(openscap ${BZIP2_LIBRARIES})
 endif()
@@ -114,9 +108,6 @@ if(BLKID_FOUND)
 endif()
 if(DBUS_FOUND)
 	target_link_libraries(openscap ${DBUS_LIBRARIES})
-endif()
-if(APTPKG_FOUND)
-	target_link_libraries(openscap ${APTPKG_LIBRARIES})
 endif()
 if(ACL_FOUND)
 	target_link_libraries(openscap ${ACL_LIBRARY})

@@ -57,6 +57,20 @@ if(ENABLE_OSCAP_UTIL)
 			COMMENT "Generating chroot-capable oscap buddy"
 			DEPENDS oscap-chrootable-nocap
 		)
+
+		if(WITH_SYSTEMD)
+			if (ENABLE_OSCAP_REMEDIATE_SERVICE)
+				install(PROGRAMS "oscap-remediate"
+					DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
+				)
+				install(PROGRAMS "oscap-remediate-offline"
+					DESTINATION ${CMAKE_INSTALL_BINDIR}
+				)
+				install(FILES "oscap-remediate-offline.8"
+					DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+				)
+			endif()
+		endif()
 	endif()
 endif()
 if(ENABLE_OSCAP_UTIL_CHROOT)
@@ -77,7 +91,7 @@ if(ENABLE_OSCAP_UTIL_DOCKER)
 
 	if(NOT PYTHON_SITE_PACKAGES_INSTALL_DIR)
 	execute_process(COMMAND
-		${OSCAP_DOCKER_PYTHON} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(False, False, prefix='${CMAKE_INSTALL_PREFIX}'))"
+		${OSCAP_DOCKER_PYTHON} -c "import sysconfig; print(sysconfig.get_path('purelib'))"
 		OUTPUT_VARIABLE PYTHON_SITE_PACKAGES_INSTALL_DIR
 		OUTPUT_STRIP_TRAILING_WHITESPACE
 	)

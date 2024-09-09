@@ -27,6 +27,7 @@ add_oscap_test_executable(oval_fts_list
 	"${CMAKE_SOURCE_DIR}/src/common/err_queue.c"
 	"${CMAKE_SOURCE_DIR}/src/OVAL/probes/probe/entcmp.c"
 	"${CMAKE_SOURCE_DIR}/src/common/util.c"
+	"${CMAKE_SOURCE_DIR}/src/common/oscap_pcre.c"
 	"${OVAL_RESULTS_SOURCES}"
 )
 target_include_directories(oval_fts_list PUBLIC
@@ -38,3 +39,12 @@ target_include_directories(oval_fts_list PUBLIC
 )
 target_link_libraries(oval_fts_list openscap)
 add_oscap_test("fts.sh")
+
+add_oscap_test_executable(test_memusage
+	"test_memusage.c"
+	"${CMAKE_SOURCE_DIR}/src/common/bfind.c"
+)
+target_include_directories(test_memusage PUBLIC
+	"${CMAKE_SOURCE_DIR}/src/common"
+)
+add_oscap_test("test_memusage.sh")

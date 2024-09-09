@@ -254,7 +254,7 @@ Authors:
         <h3>Rule results</h3>
         <xsl:choose>
             <xsl:when test="$not_ignored_rules_count > 0" >
-                <div class="progress" title="Displays proportion of passed/fixed, failed/error, and other rules (in that order). There were $not_ignored_rules_count rules taken into account.">
+                <div class="progress" title="Displays proportion of passed/fixed, failed/error, and other rules (in that order). There were {$not_ignored_rules_count} rules taken into account.">
                     <div class="progress-bar progress-bar-success" style="width: {$passed_rules_count div $not_ignored_rules_count * 100}%">
                         <xsl:value-of select="$passed_rules_count"/> passed
                     </div>
@@ -809,14 +809,9 @@ Authors:
                     </xsl:call-template>
                 </td>
             </tr>
-            <tr><td>Identifiers and References</td><td class="identifiers">
-                <!-- XCCDF 1.2 spec says that idents in rule-result should be copied from
-                    the Rule itself. That means that we can just use the same code as guide
-                    and just use idents from Rule. -->
-                <xsl:call-template name="item-idents-refs">
-                    <xsl:with-param name="item" select="$item"/>
-                </xsl:call-template>
-            </td></tr>
+            <xsl:call-template name="item-idents-refs">
+                <xsl:with-param name="item" select="$item"/>
+            </xsl:call-template>
             <xsl:if test="cdf:override">
                 <tr><td colspan="2">
                     <xsl:for-each select="cdf:override">

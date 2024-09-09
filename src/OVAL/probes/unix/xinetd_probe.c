@@ -522,7 +522,8 @@ static xiconf_file_t *xiconf_read(const char *path, int flags)
 	{
 		/* fallback method - copy the contents into memory */
 
-		file->inmem = malloc(file->inlen);
+		file->inmem = malloc(file->inlen+1);
+		file->inmem[file->inlen] = '\0';
 
 		if (read (file->fd, file->inmem, file->inlen) != (ssize_t)file->inlen) {
 			/* Can't read the contents of the file */
@@ -745,6 +746,8 @@ xiconf_t *xiconf_parse(const char *path, unsigned int max_depth)
 
 				switch (inctype) {
 				case XICONF_INCTYPE_FILE:
+					strncpy (pathbuf, inclarg, sizeof(pathbuf)-1);
+
 					dD("includefile: %s", pathbuf);
 
 					if (xiconf_add_cfile (xiconf, pathbuf, xifile->depth + 1) != 0) {
@@ -1280,6 +1283,7 @@ int op_assign_bool(void *var, char *val)
 		*((bool *)(var)) = false;
 	} else {
 		char *endptr = NULL;
+		errno = 0;
 		*((bool *)(var)) = (bool) strtol (val, &endptr, 2);
 		if (errno == EINVAL || errno == ERANGE) {
 			return -1;
@@ -1482,6 +1486,10 @@ int op_remove_strl(void *var, char *val)
 		valstr_array = new_valstr_array;
 		valstr_array[valstr_array_size-1] = tok;
 		valstr_array[valstr_array_size] = NULL;
+	}
+	if (valstr_array == NULL) {
+		free(newstr_array);
+		return -2;
 	}
 
 	// Remove the insersection from the string array

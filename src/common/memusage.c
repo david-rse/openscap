@@ -56,7 +56,7 @@
 #include "memusage.h"
 #include "bfind.h"
 
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(__FreeBSD__) || defined(OS_SOLARIS)
 static int read_common_sizet(void *szp, char *strval)
 {
 	char *end;
@@ -71,6 +71,8 @@ static int read_common_sizet(void *szp, char *strval)
 		return (-1);
 
 	*end = '\0';
+
+	errno = 0;
 	*(size_t *)szp = strtoll(strval, NULL, 10);
 
 	if (errno == EINVAL ||
@@ -137,13 +139,14 @@ static int read_status(const char *source, void *base, struct stat_parser *spt, 
 			sp = oscap_bfind(spt, spt_size, sizeof(struct stat_parser),
 			                 linebuf, (int(*)(void *, void *))&cmpkey);
 
-			dD("spt: %s", linebuf);
-
 			if (sp == NULL) {
 				/* drop end of unread line */
 				while (strchr(strval, '\n') == NULL) {
 					linebuf[0] = '\n';
-					fgets(linebuf, sizeof linebuf - 1, fp);
+					if (fgets(linebuf, sizeof linebuf - 1, fp) == NULL) {
+						fclose(fp);
+						return (-1);
+					}
 					strval = linebuf;
 				}
 				continue;

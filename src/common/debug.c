@@ -187,11 +187,14 @@ static const char *__oscap_path_rstrip(const char *path)
 }
 
 
-static void debug_message_start(int level, int indent)
+static void debug_message_start(int level, int delta_indent)
 {
 	char  l;
+	static int indent = 0;
 
 	__LOCK_FP;
+
+	indent += delta_indent;
 
 	switch (level) {
 	case DBG_E:
@@ -250,13 +253,11 @@ static void debug_message_end()
 
 void __oscap_dlprintf(int level, const char *file, const char *fn, size_t line, int delta_indent, const char *fmt, ...)
 {
-	static int indent = 0;
 	va_list ap;
 
 	if (__debuglog_fp == NULL) {
 		return;
 	}
-	indent += delta_indent;
 	if (fmt == NULL) {
 		return;
 	}
@@ -264,7 +265,7 @@ void __oscap_dlprintf(int level, const char *file, const char *fn, size_t line, 
 		return;
 	}
 	va_start(ap, fmt);
-	debug_message_start(level, indent);
+	debug_message_start(level, delta_indent);
 	vfprintf(__debuglog_fp, fmt, ap);
 	if (__debuglog_level == DBG_D) {
 		debug_message_devel_metadata(file, fn, line);
@@ -293,4 +294,28 @@ void __oscap_debuglog_object (const char *file, const char *fn, size_t line, int
 	}
 	debug_message_devel_metadata(file, fn, line);
 	debug_message_end();
+}
+
+void oscap_print_env_vars()
+{
+	const char *known_env_vars[] = {
+		"OSCAP_CHECK_ENGINE_PLUGIN_DIR",
+		"OSCAP_CONTAINER_VARS",
+		"OSCAP_EVALUATION_TARGET",
+		"OSCAP_FULL_VALIDATION",
+		"OSCAP_OVAL_COMMAND_OPTIONS",
+		"OSCAP_PCRE_EXEC_RECURSION_LIMIT",
+		"OSCAP_PROBE_ROOT",
+		"SEXP_VALIDATE_DISABLE",
+		"SOURCE_DATE_EPOCH",
+		"OSCAP_PROBE_MEMORY_USAGE_RATIO",
+		"OSCAP_PROBE_MAX_COLLECTED_ITEMS",
+		"OSCAP_PROBE_IGNORE_PATHS",
+		NULL
+	};
+	dI("Using environment variables:");
+	for (int i = 0; known_env_vars[i]; i++) {
+		char *env_var_val = getenv(known_env_vars[i]);
+		dI("%s='%s'", known_env_vars[i], env_var_val ? env_var_val : "");
+	}
 }

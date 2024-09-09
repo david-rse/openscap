@@ -43,7 +43,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
-#include <pcre.h>
 
 #include "_seap.h"
 #include <probe-api.h>
@@ -53,6 +52,9 @@
 #include <oval_fts.h>
 #include "common/debug_priv.h"
 #include "common/util.h"
+#include "common/oscap_pcre.h"
+#include "common/list.h"
+
 #include "textfilecontent54_probe.h"
 
 #define FILE_SEPARATOR '/'
@@ -112,15 +114,14 @@ static SEXP_t *create_item(const char *path, const char *filename, char *pattern
 
 struct pfdata {
 	char *pattern;
-	int re_opts;
+	oscap_pcre_options_t re_opts;
 	SEXP_t *instance_ent;
-        probe_ctx *ctx;
-	pcre *compiled_regex;
+	probe_ctx *ctx;
+	oscap_pcre_t *compiled_regex;
 };
 
-static int process_file(const char *prefix, const char *path, const char *file, void *arg, oval_schema_version_t over)
+static int process_file(const char *prefix, const char *path, const char *file, struct pfdata *pfd, oval_schema_version_t over, struct oscap_list *blocked_paths)
 {
-	struct pfdata *pfd = (struct pfdata *) arg;
 	int ret = 0, path_len, file_len, cur_inst = 0, fd = -1, substr_cnt,
 		buf_size = 0, buf_used = 0, ofs = 0, buf_inc = 4096;
 	char **substrs = NULL;
@@ -144,6 +145,9 @@ static int process_file(const char *prefix, const char *path, const char *file, 
 
 	memcpy(whole_path + path_len, file, file_len + 1);
 
+	if (probe_path_is_blocked(whole_path, blocked_paths)) {
+		goto cleanup;
+	}
 	/*
 	 * If stat() fails, don't report an error and just skip the file.
 	 * This is an expected situation, because the fts_*() functions
@@ -216,7 +220,7 @@ static int process_file(const char *prefix, const char *path, const char *file, 
 			want_instance = 0;
 
 		SEXP_free(next_inst);
-		substr_cnt = oscap_get_substrings(buf, &ofs, pfd->compiled_regex, want_instance, &substrs);
+		substr_cnt = oscap_pcre_get_substrings(buf, &ofs, pfd->compiled_regex, want_instance, &substrs);
 
 		if (substr_cnt < 0) {
 			SEXP_t *msg;
@@ -240,11 +244,14 @@ static int process_file(const char *prefix, const char *path, const char *file, 
 				item = create_item(path, file, pfd->pattern,
 						cur_inst, substrs, substr_cnt, over);
 
-                                probe_item_collect(pfd->ctx, item);
-
 				for (k = 0; k < substr_cnt; ++k)
 					free(substrs[k]);
 				free(substrs);
+				int pic_ret = probe_item_collect(pfd->ctx, item);
+				if (pic_ret == 2 || pic_ret == -1) {
+					ret = -4;
+					break;
+				}
 			}
 		}
 	} while (substr_cnt > 0 && ofs < buf_used);
@@ -274,7 +281,7 @@ int textfilecontent54_probe_main(probe_ctx *ctx, void *arg)
 	struct pfdata pfd;
 	int ret = 0;
 	int errorffset = -1;
-	const char *error;
+	char *error;
 	OVAL_FTS    *ofts;
 	OVAL_FTSENT *ofts_ent;
 
@@ -316,38 +323,38 @@ int textfilecontent54_probe_main(probe_ctx *ctx, void *arg)
 
 	pfd.instance_ent = inst_ent;
         pfd.ctx          = ctx;
-	pfd.re_opts = PCRE_UTF8;
+	pfd.re_opts = OSCAP_PCRE_OPTS_UTF8;
 	r0 = probe_ent_getattrval(bh_ent, "ignore_case");
 	if (r0) {
 		val = SEXP_string_getb(r0);
 		SEXP_free(r0);
 		if (val)
-			pfd.re_opts |= PCRE_CASELESS;
+			pfd.re_opts |= OSCAP_PCRE_OPTS_CASELESS;
 	}
 	r0 = probe_ent_getattrval(bh_ent, "multiline");
 	if (r0) {
 		val = SEXP_string_getb(r0);
 		SEXP_free(r0);
 		if (val)
-			pfd.re_opts |= PCRE_MULTILINE;
+			pfd.re_opts |= OSCAP_PCRE_OPTS_MULTILINE;
 	}
 	r0 = probe_ent_getattrval(bh_ent, "singleline");
 	if (r0) {
 		val = SEXP_string_getb(r0);
 		SEXP_free(r0);
 		if (val)
-			pfd.re_opts |= PCRE_DOTALL;
+			pfd.re_opts |= OSCAP_PCRE_OPTS_DOTALL;
 	}
 
-	pfd.compiled_regex = pcre_compile(pfd.pattern, pfd.re_opts, &error,
-					  &errorffset, NULL);
+	pfd.compiled_regex = oscap_pcre_compile(pfd.pattern, pfd.re_opts, &error, &errorffset);
 	if (pfd.compiled_regex == NULL) {
 		SEXP_t *msg;
 
-		msg = probe_msg_creatf(OVAL_MESSAGE_LEVEL_ERROR, "pcre_compile() '%s' %s.", pfd.pattern, error);
+		msg = probe_msg_creatf(OVAL_MESSAGE_LEVEL_ERROR, "oscap_pcre_compile() '%s' %s.", pfd.pattern, error);
 		probe_cobj_add_msg(probe_ctx_getresult(pfd.ctx), msg);
 		SEXP_free(msg);
 		probe_cobj_set_flag(probe_ctx_getresult(pfd.ctx), SYSCHAR_FLAG_ERROR);
+		oscap_pcre_err_free(error);
 		goto cleanup;
 	}
 
@@ -358,7 +365,7 @@ int textfilecontent54_probe_main(probe_ctx *ctx, void *arg)
 			if (ofts_ent->fts_info == FTS_F
 			    || ofts_ent->fts_info == FTS_SL) {
 				// todo: handle return code
-				process_file(prefix, ofts_ent->path, ofts_ent->file, &pfd, over);
+				process_file(prefix, ofts_ent->path, ofts_ent->file, &pfd, over, ctx->blocked_paths);
 			}
 			oval_ftsent_free(ofts_ent);
 		}
@@ -375,6 +382,6 @@ int textfilecontent54_probe_main(probe_ctx *ctx, void *arg)
 	if (pfd.pattern != NULL)
 		free(pfd.pattern);
 	if (pfd.compiled_regex != NULL)
-		pcre_free(pfd.compiled_regex);
+		oscap_pcre_free(pfd.compiled_regex);
 	return ret;
 }

@@ -239,6 +239,16 @@ Authors:
                             </div></td></tr>
                         </xsl:if>
 
+                        <xsl:if test="count($profile/cdf:select[@idref=$item/@id]/cdf:remark) > 0">
+                            <tr><td>Remarks</td><td class="remarks">
+                                <xsl:for-each select="$profile/cdf:select[@idref=$item/@id]/cdf:remark">
+                                    <blockquote class="small">
+                                        <xsl:value-of select="text()" />
+                                    </blockquote>
+                            </xsl:for-each>
+                            </td></tr>
+                        </xsl:if>
+
                         <tr><td><span class="label label-warning">Severity:</span>&#160;</td><td><div class="severity">
                             <xsl:call-template name="item-severity">
                                 <xsl:with-param name="item" select="$item" />
@@ -254,11 +264,9 @@ Authors:
                         </tr>
 
 
-                        <tr><td>Identifiers and References</td><td class="identifiers">
-                            <xsl:call-template name="item-idents-refs">
-                                <xsl:with-param name="item" select="$item"/>
-                            </xsl:call-template>
-                        </td></tr>
+                        <xsl:call-template name="item-idents-refs">
+                            <xsl:with-param name="item" select="$item"/>
+                        </xsl:call-template>
 
                         <tr><td colspan="2"><div class="remediation-description">
                             <xsl:for-each select="$item/cdf:fixtext">
@@ -515,7 +523,10 @@ Authors:
                         <table class="table table-striped table-bordered">
                             <tbody>
                                 <tr><td>Identifiers and References</td><td class="identifiers">
-                                    <xsl:call-template name="item-idents-refs">
+                                    <xsl:call-template name="item-idents">
+                                        <xsl:with-param name="item" select="$item"/>
+                                    </xsl:call-template>
+                                    <xsl:call-template name="item-refs">
                                         <xsl:with-param name="item" select="$item"/>
                                     </xsl:call-template>
                                 </td></tr>

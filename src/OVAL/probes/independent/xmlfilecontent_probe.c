@@ -142,9 +142,8 @@ static xmlDocPtr strip_ns(xmlDocPtr doc)
 	return result;
 }
 
-static int process_file(const char *prefix, const char *path, const char *filename, void *arg)
+static int process_file(const char *prefix, const char *path, const char *filename, struct pfdata *pfd, struct oscap_list *blocked_paths)
 {
-	struct pfdata *pfd = (struct pfdata *) arg;
 	int ret = 0, path_len, filename_len;
 	char *whole_path = NULL;
 	xmlDoc *doc = NULL;
@@ -170,6 +169,10 @@ static int process_file(const char *prefix, const char *path, const char *filena
 	}
 
 	memcpy(whole_path + path_len, filename, filename_len + 1);
+
+	if (probe_path_is_blocked(whole_path, blocked_paths)) {
+		goto cleanup;
+	}
 
 	if (prefix == NULL) {
 		doc = xmlParseFile(whole_path);
@@ -296,16 +299,15 @@ static int process_file(const char *prefix, const char *path, const char *filena
 
 		node_cnt = nodes->nodeNr;
 		dD("node_cnt: %d.", node_cnt);
-		if (node_cnt == 0) {
-			probe_item_setstatus(item, SYSCHAR_STATUS_DOES_NOT_EXIST);
-			probe_item_ent_add(item, "value_of", NULL, NULL);
-			probe_itement_setstatus(item, "value_of", 1, SYSCHAR_STATUS_DOES_NOT_EXIST);
+		if (node_cnt <= 0) {
+			ret = -5;
+			goto cleanup;
 		} else {
 			node_tab = nodes->nodeTab;
 			for (i = 0; i < node_cnt; ++i) {
 				cur_node = node_tab[i];
-				dD("node[%d] line: %d, name: '%s', type: %d.",
-				   i, cur_node->line, cur_node->name, cur_node->type);
+				dD("node[%d] line: %ld, name: '%s', type: %d.",
+				   i, XML_GET_LINE(cur_node), cur_node->name, cur_node->type);
 				if (cur_node->type == XML_ATTRIBUTE_NODE
 				    || cur_node->type == XML_TEXT_NODE) {
 					xmlChar *value;
@@ -394,7 +396,7 @@ int xmlfilecontent_probe_main(probe_ctx *ctx, void *arg)
 
 	if ((ofts = oval_fts_open_prefixed(prefix, path_ent, filename_ent, filepath_ent, behaviors_ent, probe_ctx_getresult(ctx))) != NULL) {
 		while ((ofts_ent = oval_fts_read(ofts)) != NULL) {
-			process_file(prefix, ofts_ent->path, ofts_ent->file, &pfd);
+			process_file(prefix, ofts_ent->path, ofts_ent->file, &pfd, ctx->blocked_paths);
 			oval_ftsent_free(ofts_ent);
 		}
 

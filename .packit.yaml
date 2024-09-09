@@ -1,20 +1,31 @@
 downstream_package_name: openscap
-jobs:
-- job: copr_build
-  metadata:
-    targets:
-    - fedora-all-x86_64
-  trigger: pull_request
-- job: tests
-  metadata:
-    targets:
-    - fedora-all-x86_64
-  trigger: pull_request
-- job: propose_downstream
-  metadata:
-    dist-git-branch: fedora-all
-  trigger: release
-specfile_path: openscap.spec
-synced_files:
-- .packit.yaml
 upstream_package_name: openscap
+specfile_path: openscap.spec
+
+actions:
+  get-current-version:
+  - bash -c "source release_tools/versions.sh && echo ${version}"
+
+srpm_build_deps:
+  - bash
+
+jobs:
+- &build
+  job: copr_build
+  trigger: pull_request
+  metadata:
+    targets:
+    - fedora-all-x86_64
+    - centos-stream-9-x86_64
+    - centos-stream-10-x86_64
+
+- job: tests
+  trigger: pull_request
+  metadata:
+    targets:
+    - fedora-all-x86_64
+    - centos-stream-9-x86_64
+    - centos-stream-10-x86_64
+
+- <<: *build
+  trigger: commit

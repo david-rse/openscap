@@ -195,21 +195,15 @@ OSCAP_API void ds_sds_session_reset(struct ds_sds_session *session);
 /**
  * Set property of remote content.
  * @memberof ds_sds_session
- * @param session The Source DataStream Session
- * @param allowed Whether is download of remote resources allowed in this session (defaults to false)
- * @param callback used to notify user about download proceeds. This might be safely set
- * to NULL -- ignoring user notification.
+ * @param session The source data stream session
+ * @param allowed Whether is download of remote resources allowed in this
+ * session (defaults to false)
+ * @param local_files Allows to use a locally downloaded copy of the remote
+ * resources. Contains a path to a directory where the files are stored
+ * (defaults to NULL).
+ * @param callback used to notify user about download proceeds. This might be
+ * safely set to NULL -- ignoring user notification.
  */
-OSCAP_API void ds_sds_session_set_remote_resources(struct ds_sds_session *session, bool allowed, download_progress_calllback_t callback);
-
-/**
- * Returns HTML representation of selected checklist in form of OpenSCAP guide.
- * @memberof ds_sds_session
- * @param session The Source DataStream session to generate guide from
- * @param profile_id ID of XCCDF profile within selected checklist to
- * generate guide for
- * @returns a buffer of HTML content that should be freed by the caller
- */
-OSCAP_API char *ds_sds_session_get_html_guide(struct ds_sds_session *session, const char *profile_id);
+OSCAP_API void ds_sds_session_configure_remote_resources(struct ds_sds_session *session, bool allowed, const char *local_files, download_progress_calllback_t callback);
 
 #endif

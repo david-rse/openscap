@@ -871,7 +871,6 @@ oval_syschar_collection_flag_t probe_cobj_compute_flag(SEXP_t *cobj)
 	SEXP_t *items, *item;
 	int error_cnt = 0;
 	int exists_cnt = 0;
-	int does_not_exist_cnt = 0;
 	int not_collected_cnt = 0;
 
 	items = probe_cobj_get_items(cobj);
@@ -884,7 +883,6 @@ oval_syschar_collection_flag_t probe_cobj_compute_flag(SEXP_t *cobj)
 			++exists_cnt;
 			break;
 		case SYSCHAR_STATUS_DOES_NOT_EXIST:
-			++does_not_exist_cnt;
 			break;
 		case SYSCHAR_STATUS_NOT_COLLECTED:
 			++not_collected_cnt;
@@ -1796,4 +1794,20 @@ SEXP_t *probe_obj_getmask(SEXP_t *obj)
     SEXP_free(objents);
     return (mask);
 }
+
+bool probe_path_is_blocked(const char *path, struct oscap_list *blocked_paths)
+{
+	bool res = false;
+	struct oscap_iterator *it = oscap_iterator_new(blocked_paths);
+	while (oscap_iterator_has_more(it)) {
+		const char *item = oscap_iterator_next(it);
+		if (oscap_path_startswith(path, item)) {
+			res = true;
+			break;
+		}
+	}
+	oscap_iterator_free(it);
+	return res;
+}
+
 /// @}

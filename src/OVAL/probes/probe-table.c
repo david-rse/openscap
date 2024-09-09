@@ -127,6 +127,10 @@
 #include "unix/linux/systemdunitproperty_probe.h"
 #endif
 
+#ifdef OPENSCAP_PROBE_LINUX_FWUPDSECURITYATTR
+#include "unix/linux/fwupdsecattr_probe.h"
+#endif
+
 #ifdef OPENSCAP_PROBE_SOLARIS_ISAINFO
 #include "unix/solaris/isainfo_probe.h"
 #endif
@@ -253,7 +257,7 @@ static const probe_table_entry_t probe_table[] = {
 	{OVAL_INDEPENDENT_YAML_FILE_CONTENT, NULL, yamlfilecontent_probe_main, NULL, yamlfilecontent_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_LINUX_DPKGINFO
-	{OVAL_LINUX_DPKG_INFO, dpkginfo_probe_init, dpkginfo_probe_main, dpkginfo_probe_fini, dpkginfo_probe_offline_mode_supported},
+	{OVAL_LINUX_DPKG_INFO, NULL, dpkginfo_probe_main, NULL, dpkginfo_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_LINUX_IFLISTENERS
 	{OVAL_LINUX_IFLISTENERS, NULL, iflisteners_probe_main, NULL, NULL},
@@ -288,6 +292,9 @@ static const probe_table_entry_t probe_table[] = {
 #ifdef OPENSCAP_PROBE_LINUX_SYSTEMDUNITPROPERTY
 	{OVAL_LINUX_SYSTEMDUNITPROPERTY, NULL, systemdunitproperty_probe_main, NULL, systemdunitproperty_probe_offline_mode_supported},
 #endif
+#ifdef OPENSCAP_PROBE_LINUX_FWUPDSECURITYATTR
+	{OVAL_LINUX_FWUPDSECATTR, NULL, fwupdsecattr_probe_main, NULL, NULL},
+#endif
 #ifdef OPENSCAP_PROBE_SOLARIS_ISAINFO
 	{OVAL_SOLARIS_ISAINFO, NULL, isainfo_probe_main, NULL, NULL},
 #endif
@@ -307,7 +314,7 @@ static const probe_table_entry_t probe_table[] = {
 	{OVAL_UNIX_INTERFACE, NULL, interface_probe_main, NULL, NULL},
 #endif
 #ifdef OPENSCAP_PROBE_UNIX_PASSWORD
-	{OVAL_UNIX_PASSWORD, NULL, password_probe_main, NULL, NULL},
+	{OVAL_UNIX_PASSWORD, NULL, password_probe_main, NULL, password_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_UNIX_PROCESS
 	{OVAL_UNIX_PROCESS, NULL, process_probe_main, NULL, NULL},
@@ -322,13 +329,13 @@ static const probe_table_entry_t probe_table[] = {
 	{OVAL_UNIX_RUNLEVEL, NULL, runlevel_probe_main, NULL, runlevel_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_UNIX_SHADOW
-	{OVAL_UNIX_SHADOW, NULL, shadow_probe_main, NULL, NULL},
+	{OVAL_UNIX_SHADOW, NULL, shadow_probe_main, NULL, shadow_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_UNIX_SYMLINK
 	{OVAL_UNIX_SYMLINK, NULL, symlink_probe_main, NULL, symlink_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_UNIX_SYSCTL
-	{OVAL_UNIX_SYSCTL, NULL, sysctl_probe_main, NULL, NULL},
+	{OVAL_UNIX_SYSCTL, NULL, sysctl_probe_main, NULL, sysctl_probe_offline_mode_supported},
 #endif
 #ifdef OPENSCAP_PROBE_UNIX_UNAME
 	{OVAL_UNIX_UNAME, NULL, uname_probe_main, NULL, NULL},
@@ -391,6 +398,21 @@ void probe_table_list(FILE *output)
 		fprintf(output, "%-14s", oval_family_get_text(oval_subtype_get_family(type)));
 		fprintf(output, "%-29s", oval_subtype_get_text(type));
 		fprintf(output, "probe_%s", oval_subtype_get_text(type));
+#if (defined(OPENSCAP_ENABLE_MD5) && defined(OPENSCAP_ENABLE_SHA1))
+		if (type == OVAL_INDEPENDENT_FILE_HASH) {
+			fprintf(output, " (MD5, SHA-1)");
+		}
+#endif
+		if (type == OVAL_INDEPENDENT_FILE_HASH58) {
+			fprintf(output, " (");
+#ifdef OPENSCAP_ENABLE_MD5
+			fprintf(output, "MD5, ");
+#endif
+#ifdef OPENSCAP_ENABLE_SHA1
+			fprintf(output, "SHA-1, ");
+#endif
+			fprintf(output, "SHA-224, SHA-256, SHA-384, SHA-512)");
+		}
 		fprintf(output, "\n");
 		entry++;
 	}

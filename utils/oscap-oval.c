@@ -108,14 +108,14 @@ static struct oscap_module OVAL_EVAL = {
 	"   --without-syschar             - Don't provide system characteristic in result file.\n"
 	"   --results <file>              - Write OVAL Results into file.\n"
 	"   --report <file>               - Create human readable (HTML) report from OVAL Results.\n"
-	"   --skip-valid                  - Skip validation.\n"
-	"   --skip-validation\n"
+	"   --skip-validation             - Skip validation.\n"
 	"   --datastream-id <id>          - ID of the data stream in the collection to use.\n"
 	"                                   (only applicable for source data streams)\n"
 	"   --oval-id <id>                - ID of the OVAL component ref in the data stream to use.\n"
 	"                                   (only applicable for source data streams)\n"
 	"   --fetch-remote-resources      - Download remote content referenced by OVAL Definitions.\n"
-	"                                   (only applicable for source data streams)\n",
+	"                                   (only applicable for source data streams)\n"
+	"   --local-files <dir>           - Use locally downloaded copies of remote resources stored in the given directory.\n",
     .opt_parser = getopt_oval_eval,
     .func = app_evaluate_oval
 };
@@ -130,8 +130,7 @@ static struct oscap_module OVAL_COLLECT = {
 	"   --id <object>                 - Collect system characteristics ONLY for specified OVAL Object.\n"
 	"   --syschar <file>              - Write OVAL System Characteristic into file.\n"
 	"   --variables <file>            - Provide external variables expected by OVAL Definitions.\n"
-	"   --skip-valid                  - Skip validation.\n"
-	"   --skip-validation\n",
+	"   --skip-validation             - Skip validation.\n",
     .opt_parser = getopt_oval_collect,
     .func = app_collect_oval
 };
@@ -146,8 +145,7 @@ static struct oscap_module OVAL_ANALYSE = {
 	"Options:\n"
 	"   --variables <file>            - Provide external variables expected by OVAL Definitions.\n"
 	"   --directives <file>           - Use OVAL Directives content to specify desired results content.\n"
-	"   --skip-valid                  - Skip validation.\n"
-	"   --skip-validation\n",
+	"   --skip-validation             - Skip validation.\n",
     .opt_parser = getopt_oval_analyse,
     .func = app_analyse_oval
 };
@@ -344,7 +342,7 @@ int app_evaluate_oval(const struct oscap_action *action)
 	/* set OVAL Variables */
 	oval_session_set_variables(session, action->f_variables);
 
-	oval_session_set_remote_resources(session, action->remote_resources, download_reporting_callback);
+	oval_session_configure_remote_resources(session, action->remote_resources, action->local_files, download_reporting_callback);
 	/* load all necesary OVAL Definitions and bind OVAL Variables if provided */
 	if ((oval_session_load(session)) != 0)
 		goto cleanup;
@@ -499,7 +497,8 @@ enum oval_opt {
     OVAL_OPT_DIRECTIVES,
     OVAL_OPT_DATASTREAM_ID,
     OVAL_OPT_OVAL_ID,
-	OVAL_OPT_OUTPUT = 'o'
+	OVAL_OPT_OUTPUT = 'o',
+	OVAL_OPT_LOCAL_FILES
 };
 
 #if defined(OVAL_PROBES_ENABLED)
@@ -517,9 +516,9 @@ bool getopt_oval_eval(int argc, char **argv, struct oscap_action *action)
 		{ "without-syschar",	no_argument, &action->without_sys_chars, 1},
 		{ "datastream-id",required_argument, NULL, OVAL_OPT_DATASTREAM_ID},
 		{ "oval-id",    required_argument, NULL, OVAL_OPT_OVAL_ID},
-		{ "skip-valid",	no_argument, &action->validate, 0 },
 		{ "skip-validation",	no_argument, &action->validate, 0 },
 		{ "fetch-remote-resources", no_argument, &action->remote_resources, 1},
+		{ "local-files", required_argument, NULL, OVAL_OPT_LOCAL_FILES},
 		{ 0, 0, 0, 0 }
 	};
 
@@ -533,6 +532,9 @@ bool getopt_oval_eval(int argc, char **argv, struct oscap_action *action)
 		case OVAL_OPT_DIRECTIVES: action->f_directives = optarg; break;
 		case OVAL_OPT_DATASTREAM_ID: action->f_datastream_id = optarg;	break;
 		case OVAL_OPT_OVAL_ID: action->f_oval_id = optarg;	break;
+		case OVAL_OPT_LOCAL_FILES:
+			action->local_files = optarg;
+			break;
 		case 0: break;
 		default: return oscap_module_usage(action->module, stderr, NULL);
 		}
@@ -557,7 +559,6 @@ bool getopt_oval_collect(int argc, char **argv, struct oscap_action *action)
 		{ "id",        	required_argument, NULL, OVAL_OPT_ID           },
 		{ "variables",	required_argument, NULL, OVAL_OPT_VARIABLES    },
 		{ "syschar",	required_argument, NULL, OVAL_OPT_SYSCHAR      },
-		{ "skip-valid",	no_argument, &action->validate, 0 },
 		{ "skip-validation",	no_argument, &action->validate, 0 },
 		{ 0, 0, 0, 0 }
 	};
@@ -591,7 +592,6 @@ bool getopt_oval_analyse(int argc, char **argv, struct oscap_action *action)
 		{ "results", 	required_argument, NULL, OVAL_OPT_RESULT_FILE  },
 		{ "variables",	required_argument, NULL, OVAL_OPT_VARIABLES    },
 		{ "directives",	required_argument, NULL, OVAL_OPT_DIRECTIVES   },
-		{ "skip-valid",	no_argument, &action->validate, 0 },
 		{ "skip-validation",	no_argument, &action->validate, 0 },
 		{ 0, 0, 0, 0 }
 	};
@@ -670,8 +670,6 @@ bool getopt_oval_validate(int argc, char **argv, struct oscap_action *action)
 		{ "syschar",		no_argument, &action->doctype, OSCAP_DOCUMENT_OVAL_SYSCHAR     },
 		{ "results",		no_argument, &action->doctype, OSCAP_DOCUMENT_OVAL_RESULTS     },
 		{ "directives",		no_argument, &action->doctype, OSCAP_DOCUMENT_OVAL_DIRECTIVES  },
-		//TODO: force schematron validation (no-op, deprecate and remove)
-		{ "schematron",		no_argument, &action->schematron, 1 },
 		{ "skip-schematron",no_argument, &action->schematron, 0 },
         // end
 		{ 0, 0, 0, 0 }
@@ -766,7 +764,7 @@ static int app_oval_validate(const struct oscap_action *action) {
 	} else {
 		// We can only do schematron validation if the file isn't a source datastream
 		if (action->schematron && oscap_source_get_scap_type(source) != OSCAP_DOCUMENT_SDS) {
-			ret = oscap_source_validate_schematron(source, NULL);
+			ret = oscap_source_validate_schematron(source);
 			if (ret < 0) {
 				result = OSCAP_ERROR;
 			} else if (ret > 0) {

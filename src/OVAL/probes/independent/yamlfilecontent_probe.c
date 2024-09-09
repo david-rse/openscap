@@ -26,7 +26,6 @@
 
 #include <math.h>
 #include <errno.h>
-#include <pcre.h>
 #include <yaml.h>
 #include <yaml-path.h>
 
@@ -36,11 +35,13 @@
 #include "oval_fts.h"
 #include "list.h"
 #include "probe/probe.h"
+#include "common/oscap_pcre.h"
 
 #define OSCAP_YAML_STRING_TAG "tag:yaml.org,2002:str"
 #define OSCAP_YAML_BOOL_TAG "tag:yaml.org,2002:bool"
 #define OSCAP_YAML_FLOAT_TAG "tag:yaml.org,2002:float"
 #define OSCAP_YAML_INT_TAG "tag:yaml.org,2002:int"
+#define OSCAP_YAML_NULL_TAG "tag:yaml.org,2002:null"
 
 #define OVECCOUNT 30 /* should be a multiple of 3 */
 
@@ -51,17 +52,18 @@ int yamlfilecontent_probe_offline_mode_supported()
 
 static bool match_regex(const char *pattern, const char *value)
 {
-	const char *errptr;
+	char *errptr;
 	int erroroffset;
-	pcre *re = pcre_compile(pattern, 0, &errptr, &erroroffset, NULL);
+	oscap_pcre_t *re = oscap_pcre_compile(pattern, 0, &errptr, &erroroffset);
 	if (re == NULL) {
-		dE("pcre_compile failed on pattern '%s': %s at %d", pattern,
+		dE("oscap_pcre_compile failed on pattern '%s': %s at %d", pattern,
 			errptr, erroroffset);
+		oscap_pcre_err_free(errptr);
 		return false;
 	}
 	int ovector[OVECCOUNT];
-	int rc = pcre_exec(re, NULL, value, strlen(value), 0, 0, ovector, OVECCOUNT);
-	pcre_free(re);
+	int rc = oscap_pcre_exec(re, value, strlen(value), 0, 0, ovector, OVECCOUNT);
+	oscap_pcre_free(re);
 	if (rc > 0) {
 		return true;
 	}
@@ -131,6 +133,14 @@ static SEXP_t *yaml_scalar_event_to_sexp(yaml_event_t *event)
 		} else if (match_regex("^(\\.nan|\\.NaN|\\.NAN)$", value)) {
 			double double_value = NAN;
 			return SEXP_number_newf(double_value);
+		} else if (!question) {
+			return NULL;
+		}
+	}
+	if (question || !strcmp(tag, OSCAP_YAML_NULL_TAG)) {
+		if (match_regex("^(null|Null|NULL|~|)$", value)) {
+			// TODO: Return real NULL when record's field will support nil="true"
+			return SEXP_string_new("(null)", strlen("(null)"));
 		} else if (!question) {
 			return NULL;
 		}
@@ -382,10 +392,15 @@ static int process_yaml_file(const char *prefix, const char *path, const char *f
 {
 	int ret = 0;
 
+	char *filepath = oscap_path_join(path, filename);
+	if (probe_path_is_blocked(filepath, ctx->blocked_paths)) {
+		free(filepath);
+		return 0;
+	}
+
 	yaml_parser_t parser;
 	yaml_parser_initialize(&parser);
 
-	char *filepath = oscap_path_join(path, filename);
 	char *filepath_with_prefix = oscap_path_join(prefix, filepath);
 
 	FILE *yaml_file = fopen(filepath_with_prefix, "r");

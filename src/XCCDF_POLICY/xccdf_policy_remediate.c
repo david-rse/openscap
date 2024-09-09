@@ -38,16 +38,35 @@
 #endif
 
 #include <libxml/tree.h>
-#include <pcre.h>
 
 #include "XCCDF/item.h"
 #include "common/_error.h"
 #include "common/debug_priv.h"
 #include "common/oscap_acquire.h"
+#include "common/oscap_pcre.h"
 #include "xccdf_policy_priv.h"
 #include "xccdf_policy_model_priv.h"
 #include "public/xccdf_policy.h"
 #include "oscap_helpers.h"
+
+struct kickstart_commands {
+	struct oscap_list *package_install;
+	struct oscap_list *package_remove;
+	struct oscap_list *service_enable;
+	struct oscap_list *service_disable;
+	struct oscap_list *pre;
+	struct oscap_list *post;
+	struct oscap_list *logvol;
+	struct oscap_list *bootloader;
+	struct oscap_list *firewall_enable;
+	struct oscap_list *firewall_disable;
+	bool enable_kdump;
+};
+
+struct logvol_cmd {
+	char *path;
+	char *size;
+};
 
 static int _rule_add_info_message(struct xccdf_rule_result *rr, ...)
 {
@@ -101,6 +120,8 @@ static int _write_text_to_fd_and_free(int output_fd, char *text)
 
 static int _write_remediation_to_fd_and_free(int output_fd, const char* template, char* text)
 {
+	if (text == NULL)
+		return 0;
 	if (oscap_streq(template, "urn:xccdf:fix:script:ansible")) {
 		// Add required indentation in front of every single line
 
@@ -420,12 +441,14 @@ static inline int _xccdf_fix_execute(struct xccdf_rule_result *rr, struct xccdf_
 	int fd = oscap_acquire_temp_file(temp_dir, "fix-XXXXXXXX", &temp_file);
 	if (fd == -1) {
 		_rule_add_info_message(rr, "mkstemp failed: %s", strerror(errno));
+		free(temp_file);
 		goto cleanup;
 	}
 
 	if (_write_text_to_fd(fd, fix_text) != 0) {
 		_rule_add_info_message(rr, "Could not write to the temp file: %s", strerror(errno));
 		(void) close(fd);
+		free(temp_file);
 		goto cleanup;
 	}
 
@@ -435,6 +458,7 @@ static inline int _xccdf_fix_execute(struct xccdf_rule_result *rr, struct xccdf_
 	int pipefd[2];
 	if (pipe(pipefd) == -1) {
 		_rule_add_info_message(rr, "Could not create pipe: %s", strerror(errno));
+		free(temp_file);
 		goto cleanup;
 	}
 
@@ -628,7 +652,7 @@ static int _write_fix_header_to_fd(const char *sys, int output_fd, struct xccdf_
 				"###############################################################################\n"
 				"# BEGIN fix (%i / %i) for '%s'\n"
 				"###############################################################################\n"
-				"(>&2 echo \"Remediating rule %i/%i: '%s'\")\n",
+				"(>&2 echo \"Remediating rule %i/%i: '%s'\"); (\n",
 				current, total, xccdf_rule_get_id(rule), current, total, xccdf_rule_get_id(rule));
 		return _write_text_to_fd_and_free(output_fd, fix_header);
 	} else {
@@ -639,7 +663,7 @@ static int _write_fix_header_to_fd(const char *sys, int output_fd, struct xccdf_
 static int _write_fix_footer_to_fd(const char *sys, int output_fd, struct xccdf_rule *rule)
 {
 	if (oscap_streq(sys, "") || oscap_streq(sys, "urn:xccdf:fix:script:sh") || oscap_streq(sys, "urn:xccdf:fix:commands")) {
-		char *fix_footer = oscap_sprintf("\n# END fix for '%s'\n\n", xccdf_rule_get_id(rule));
+		char *fix_footer = oscap_sprintf("\n) # END fix for '%s'\n\n", xccdf_rule_get_id(rule));
 		return _write_text_to_fd_and_free(output_fd, fix_footer);
 	} else {
 		return 0;
@@ -656,6 +680,88 @@ static int _write_fix_missing_warning_to_fd(const char *sys, int output_fd, stru
 	}
 }
 
+struct blueprint_entries {
+	const char *pattern;
+	struct oscap_list *list;
+	oscap_pcre_t *re;
+};
+
+struct blueprint_customizations {
+	struct oscap_list *generic;
+	struct oscap_list *services_enable;
+	struct oscap_list *services_disable;
+	struct oscap_list *services_mask;
+	struct oscap_list *kernel_append;
+};
+
+static inline int _parse_blueprint_fix(const char *fix_text, struct blueprint_customizations *customizations)
+{
+	char *err;
+	int errofs;
+	int ret = 0;
+
+	struct blueprint_entries tab[] = {
+		{"\\[customizations\\.services\\]\\s+enabled[=\\s]+\\[([^\\]]+)\\]\\s+", customizations->services_enable, NULL},
+		{"\\[customizations\\.services\\]\\s+disabled[=\\s]+\\[([^\\]]+)\\]\\s+", customizations->services_disable, NULL},
+		{"\\[customizations\\.services\\]\\s+masked[=\\s]+\\[([^\\]]+)\\]\\s+", customizations->services_mask, NULL},
+		{"\\[customizations\\.kernel\\]\\s+append[=\\s\"]+([^\"]+)[\\s\"]+", customizations->kernel_append, NULL},
+		// We do this only to pop the 'distro' entry to the top of the generic list,
+		// effectively placing it to the root of the TOML document.
+		{"\\s+(distro[=\\s\"]+[^\"]+[\\s\"]+)", customizations->generic, NULL},
+		{NULL, NULL, NULL}
+	};
+
+	for (int i = 0; tab[i].pattern != NULL; i++) {
+		tab[i].re = oscap_pcre_compile(tab[i].pattern, OSCAP_PCRE_OPTS_UTF8, &err, &errofs);
+		if (tab[i].re == NULL) {
+			dE("Unable to compile /%s/ regex pattern, oscap_pcre_compile() returned error (offset: %d): '%s'.\n", tab[i].pattern, errofs, err);
+			oscap_pcre_err_free(err);
+			ret = 1;
+			goto exit;
+		}
+	}
+
+	const size_t fix_text_len = strlen(fix_text);
+	size_t start_offset = 0;
+	int ovector[6] = {0};
+
+	for (int i = 0; tab[i].pattern != NULL; i++) {
+		while (true) {
+			const int match = oscap_pcre_exec(tab[i].re, fix_text, fix_text_len, start_offset,
+			                            0, ovector, sizeof(ovector) / sizeof(ovector[0]));
+			if (match == -1)
+				break;
+
+			if (match != 2) {
+				dE("Expected 1 capture group matches per entry. Found %i!", match - 1);
+				ret = 1;
+				goto exit;
+			}
+
+			char *val = malloc((ovector[3] - ovector[2] + 1) * sizeof(char));
+			memcpy(val, &fix_text[ovector[2]], ovector[3] - ovector[2]);
+			val[ovector[3] - ovector[2]] = '\0';
+
+			if (!oscap_list_contains(customizations->kernel_append, val, (oscap_cmp_func) oscap_streq)) {
+				oscap_list_prepend(tab[i].list, val);
+			} else {
+				free(val);
+			}
+
+			start_offset = ovector[1];
+		}
+	}
+
+	if (start_offset < fix_text_len-1) {
+		oscap_list_add(customizations->generic, strdup(fix_text + start_offset));
+	}
+
+exit:
+	for (int i = 0; tab[i].pattern != NULL; i++)
+		oscap_pcre_free(tab[i].re);
+
+	return ret;
+}
 
 static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *variables, struct oscap_list *tasks)
 {
@@ -663,13 +769,14 @@ static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *va
 	const char *pattern =
 		"- name: XCCDF Value [^ ]+ # promote to variable\n  set_fact:\n"
 		"    ([^:]+): (.+)\n  tags:\n    - always\n";
-	const char *err;
+	char *err;
 	int errofs;
 
-	pcre *re = pcre_compile(pattern, PCRE_UTF8, &err, &errofs, NULL);
+	oscap_pcre_t *re = oscap_pcre_compile(pattern, OSCAP_PCRE_OPTS_UTF8, &err, &errofs);
 	if (re == NULL) {
 		dE("Unable to compile regex pattern, "
-				"pcre_compile() returned error (offset: %d): '%s'.\n", errofs, err);
+				"oscap_pcre_compile() returned error (offset: %d): '%s'.\n", errofs, err);
+		oscap_pcre_err_free(err);
 		return 1;
 	}
 
@@ -684,14 +791,14 @@ static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *va
 	const size_t fix_text_len = strlen(fix_text);
 	int start_offset = 0;
 	while (true) {
-		const int match = pcre_exec(re, NULL, fix_text, fix_text_len, start_offset,
+		const int match = oscap_pcre_exec(re, fix_text, fix_text_len, start_offset,
 				0, ovector, sizeof(ovector) / sizeof(ovector[0]));
 		if (match == -1)
 			break;
 		if (match != 3) {
 			dE("Expected 2 capture group matches per XCCDF variable. Found %i!",
 				match - 1);
-			pcre_free(re);
+			oscap_pcre_free(re);
 			return 1;
 		}
 
@@ -733,7 +840,7 @@ static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *va
 		oscap_list_add(tasks, remediation_part);
 	}
 
-	pcre_free(re);
+	oscap_pcre_free(re);
 	return 0;
 }
 
@@ -790,6 +897,226 @@ static int _xccdf_policy_rule_generate_fix(struct xccdf_policy *policy, struct x
 		return ret;
 	}
 	ret = _write_fix_footer_to_fd(template, output_fd, rule);
+	return ret;
+}
+
+static int _xccdf_policy_rule_generate_blueprint_fix(struct xccdf_policy *policy, struct xccdf_rule *rule, const char *template, struct blueprint_customizations *customizations)
+{
+	char *fix_text = NULL;
+	int ret = _xccdf_policy_rule_get_fix_text(policy, rule, template, &fix_text);
+	if (fix_text == NULL) {
+		return ret;
+	}
+	ret = _parse_blueprint_fix(fix_text, customizations);
+	free(fix_text);
+	return ret;
+}
+
+static int _parse_line(const char *line, struct kickstart_commands *cmds)
+{
+	int ret = 0;
+	char *dup = strdup(line);
+	char **words = oscap_split(dup, " ");
+	enum states {
+		KS_START,
+		KS_PACKAGE,
+		KS_PACKAGE_INSTALL,
+		KS_PACKAGE_REMOVE,
+		KS_SERVICE,
+		KS_SERVICE_ENABLE,
+		KS_SERVICE_DISABLE,
+		KS_LOGVOL,
+		KS_LOGVOL_SIZE,
+		KS_BOOTLOADER,
+		KS_KDUMP,
+		KS_FIREWALL,
+		KS_FIREWALL_ENABLE,
+		KS_FIREWALL_DISABLE,
+		KS_ERROR
+	};
+	int state = KS_START;
+	struct logvol_cmd *current_logvol_cmd = NULL;
+	for (unsigned int i = 0; words[i] != NULL; i++) {
+		char *word = oscap_trim(words[i]);
+		if (*word == '\0')
+			continue;
+		switch (state) {
+		case KS_START:
+			if (!strcmp(word, "package")) {
+				state = KS_PACKAGE;
+			} else if (!strcmp(word, "service")) {
+				state = KS_SERVICE;
+			} else if (!strcmp(word, "logvol")) {
+				state = KS_LOGVOL;
+			} else if (!strcmp(word, "bootloader")) {
+				state = KS_BOOTLOADER;
+			} else if (!strcmp(word, "kdump")) {
+				state = KS_KDUMP;
+			}  else if (!strcmp(word, "firewall")) {
+				state = KS_FIREWALL;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported command keyword '%s' in command: '%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case KS_PACKAGE:
+			if (!strcmp(word, "install")) {
+				state = KS_PACKAGE_INSTALL;
+			} else if (!strcmp(word, "remove")) {
+				state = KS_PACKAGE_REMOVE;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported 'package' command keyword '%s' in command:'%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case KS_PACKAGE_INSTALL:
+			oscap_list_add(cmds->package_install, strdup(word));
+			break;
+		case KS_PACKAGE_REMOVE:
+			oscap_list_add(cmds->package_remove, strdup(word));
+			break;
+		case KS_SERVICE:
+			if (!strcmp(word, "enable")) {
+				state = KS_SERVICE_ENABLE;
+			} else if (!strcmp(word, "disable")) {
+				state = KS_SERVICE_DISABLE;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported 'service' command keyword '%s' in command: '%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case KS_SERVICE_ENABLE:
+			oscap_list_add(cmds->service_enable, strdup(word));
+			break;
+		case KS_SERVICE_DISABLE:
+			oscap_list_add(cmds->service_disable, strdup(word));
+			break;
+		case KS_LOGVOL:
+			current_logvol_cmd = malloc(sizeof(struct logvol_cmd));
+			current_logvol_cmd->path = strdup(word);
+			state = KS_LOGVOL_SIZE;
+			break;
+		case KS_LOGVOL_SIZE:
+			current_logvol_cmd->size = strdup(word);
+			oscap_list_add(cmds->logvol, current_logvol_cmd);
+			current_logvol_cmd = NULL;
+			state = KS_ERROR;
+			break;
+		case KS_BOOTLOADER:
+			oscap_list_add(cmds->bootloader, strdup(word));
+			break;
+		case KS_KDUMP:
+			if (!strcmp(word, "disable")) {
+				cmds->enable_kdump = false;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported 'kdump' command keyword '%s' in command: '%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case KS_FIREWALL:
+			if (!strcmp(word, "enable")) {
+				state = KS_FIREWALL_ENABLE;
+			} else if (!strcmp(word, "disable")) {
+				state = KS_FIREWALL_DISABLE;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported 'firewall' command keyword '%s' in command: '%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case KS_FIREWALL_ENABLE:
+			oscap_list_add(cmds->firewall_enable, strdup(word));
+			break;
+		case KS_FIREWALL_DISABLE:
+			oscap_list_add(cmds->firewall_disable, strdup(word));
+			break;
+		case KS_ERROR:
+			ret = 1;
+			oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unexpected string '%s' in command: '%s'", word, line);
+			goto cleanup;
+		default:
+			break;
+		}
+	}
+
+cleanup:
+	free(words);
+	free(dup);
+	return ret;
+}
+
+static int _xccdf_policy_rule_generate_kickstart_fix(struct xccdf_policy *policy, struct xccdf_rule *rule, const char *template, struct kickstart_commands *cmds)
+{
+	char *fix_text = NULL;
+	int ret = _xccdf_policy_rule_get_fix_text(policy, rule, template, &fix_text);
+	if (fix_text == NULL) {
+		return ret;
+	}
+	char *dup = strdup(fix_text);
+	char **lines = oscap_split(dup, "\n");
+	enum states {
+		KS_R_P_NORMAL,
+		KS_R_P_PRE_BLOCK,
+		KS_R_P_POST_BLOCK
+	};
+	int state = KS_R_P_NORMAL;
+	char *block = NULL;
+	for (unsigned int i = 0; lines[i] != NULL; i++) {
+		char *line = lines[i];
+		char *trim_line = oscap_trim(strdup(line));
+		switch (state) {
+		case KS_R_P_NORMAL:
+			if (oscap_str_startswith(trim_line, "%pre")) {
+				state = KS_R_P_PRE_BLOCK;
+				block = strdup(trim_line);
+				block = oscap_concat(block, "\n");
+			} else if (oscap_str_startswith(trim_line, "%post")) {
+				state = KS_R_P_POST_BLOCK;
+				block = strdup(trim_line);
+				block = oscap_concat(block, "\n");
+			} else if (*trim_line != '#' && *trim_line != '\0') {
+				_parse_line(trim_line, cmds);
+			}
+			break;
+		case KS_R_P_PRE_BLOCK:
+			if (oscap_str_startswith(trim_line, "%end")) {
+				state = KS_R_P_NORMAL;
+				block = oscap_concat(block, trim_line);
+				block = oscap_concat(block, "\n");
+				oscap_list_add(cmds->pre, block);
+				block = NULL;
+			} else {
+				block = oscap_concat(block, line);
+				block = oscap_concat(block, "\n");
+			}
+			break;
+		case KS_R_P_POST_BLOCK:
+			if (oscap_str_startswith(trim_line, "%end")) {
+				state = KS_R_P_NORMAL;
+				block = oscap_concat(block, trim_line);
+				block = oscap_concat(block, "\n");
+				oscap_list_add(cmds->post, block);
+				block = NULL;
+			} else {
+				block = oscap_concat(block, line);
+				block = oscap_concat(block, "\n");
+			}
+		default:
+			break;
+		}
+		free(trim_line);
+	}
+	if (state != KS_R_P_NORMAL) {
+		oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unfinished block in kickstart remediation in rule %s\n", xccdf_rule_get_id(rule));
+	}
+	free(block);
+	free(lines);
+	free(dup);
+	free(fix_text);
 	return ret;
 }
 
@@ -911,27 +1238,55 @@ static char *_comment_multiline_text(char *text)
 	return buffer;
 }
 
-static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_result *result, const char *sys, int output_fd)
+static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_result *result, const char *sys, const char *input_file_name, const char *tailoring_file_name, int output_fd, int raw)
 {
 	if (!(oscap_streq(sys, "") || oscap_streq(sys, "urn:xccdf:fix:script:sh") || oscap_streq(sys, "urn:xccdf:fix:commands") ||
-		oscap_streq(sys, "urn:xccdf:fix:script:ansible")))
+		  oscap_streq(sys, "urn:xccdf:fix:script:ansible") || oscap_streq(sys, "urn:redhat:osbuild:blueprint") || oscap_streq(sys, "urn:xccdf:fix:script:kickstart") ))
 		return 0; // no header required
 
-	const bool ansible_script = strcmp(sys, "urn:xccdf:fix:script:ansible") == 0;
-	const char *how_to_apply = ansible_script ?
-		"# $ ansible-playbook -i \"localhost,\" -c local playbook.yml\n"
-		"# $ ansible-playbook -i \"192.168.1.155,\" playbook.yml\n"
-		"# $ ansible-playbook -i inventory.ini playbook.yml" :
-		"# $ sudo ./remediation-script.sh";
 	const char *oscap_version = oscap_get_version();
-	const char *format = ansible_script ? "ansible" : "bash";
-	const char *remediation_type = ansible_script ? "Ansible Playbook" : "Bash Remediation Script";
-	const char *shebang_with_newline = ansible_script ? "" : "#!/usr/bin/env bash\n";
+	char *how_to_apply = "";
+	char *format = (char *)sys;
+	char *remediation_type = "Unknown";
+	char *shebang_with_newline = "";
+
+	if (oscap_streq(sys, "urn:xccdf:fix:script:ansible")) {
+		how_to_apply = "# $ ansible-playbook -i \"localhost,\" -c local playbook.yml\n"
+		               "# $ ansible-playbook -i \"192.168.1.155,\" playbook.yml\n"
+		               "# $ ansible-playbook -i inventory.ini playbook.yml";
+		format = "ansible";
+		remediation_type = "Ansible Playbook";
+	}
+
+	if (oscap_streq(sys, "urn:redhat:osbuild:blueprint")) {
+		how_to_apply = "# composer-cli blueprints push blueprint.toml";
+		format = "blueprint";
+		remediation_type = "Blueprint";
+	}
+
+	if (oscap_streq(sys, "") || oscap_streq(sys, "urn:xccdf:fix:script:sh") || oscap_streq(sys, "urn:xccdf:fix:commands")) {
+		how_to_apply = "# $ sudo ./remediation-script.sh";
+		format = "bash";
+		remediation_type = "Bash Remediation Script";
+		shebang_with_newline = "#!/usr/bin/env bash\n";
+	}
+
+	if (oscap_streq(sys, "urn:xccdf:fix:script:kickstart")) {
+		how_to_apply = "# Review the kickstart and customize the kickstart for your deployment.\n"
+			"# Pay attention to items marked as \"required for security compliance\".\n"
+			"# Install the operating system using this kickstart.";
+		format = "kickstart";
+		remediation_type = "Kickstart";
+	}
 
 	char *fix_header;
 
 	struct xccdf_profile *profile = xccdf_policy_get_profile(policy);
 	const char *profile_id = xccdf_profile_get_id(profile);
+
+	struct xccdf_benchmark *benchmark = xccdf_policy_get_benchmark(policy);
+	const char *benchmark_version_info = benchmark ? xccdf_benchmark_get_version(benchmark) : "Unknown";
+	const char *benchmark_id = benchmark ? xccdf_benchmark_get_id(benchmark) : "Unknown";
 
 	// Title
 	struct oscap_text_iterator *title_iterator = xccdf_profile_get_title(profile);
@@ -940,13 +1295,10 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 	char *profile_title = _comment_multiline_text(raw_profile_title);
 	free(raw_profile_title);
 
-	if (result == NULL) {
+	if (raw > 0) {
+		fix_header = strdup("");
+	} else if (result == NULL) {
 		// Profile-based remediation fix
-		struct xccdf_benchmark *benchmark = xccdf_policy_get_benchmark(policy);
-		if (benchmark == NULL) {
-			free(profile_title);
-			return 1;
-		}
 		// Description
 		struct oscap_text_iterator *description_iterator = xccdf_profile_get_description(profile);
 		char *profile_description = description_iterator != NULL ?
@@ -955,10 +1307,11 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 		char *commented_profile_description = _comment_multiline_text(profile_description);
 		free(profile_description);
 
-		const char *benchmark_version_info = xccdf_benchmark_get_version(benchmark);
-		const char *benchmark_id = xccdf_benchmark_get_id(benchmark);
-		const struct xccdf_version_info *xccdf_version = xccdf_benchmark_get_schema_version(benchmark);
-		const char *xccdf_version_name = xccdf_version_info_get_version(xccdf_version);
+		const struct xccdf_version_info *xccdf_version = benchmark ? xccdf_benchmark_get_schema_version(benchmark) : NULL;
+		char *profile_id_banner = profile_id ? oscap_sprintf("# Profile ID:  %s\n", profile_id) : strdup("");
+		const char *xccdf_version_name = xccdf_version ? xccdf_version_info_get_version(xccdf_version) : "Unknown";
+		char *tailoring_option = tailoring_file_name ? oscap_sprintf(" --tailoring-file %s", tailoring_file_name) : strdup("");
+		char *profile_option = profile_id ? oscap_sprintf(" --profile %s", profile_id) : strdup("");
 
 		fix_header = oscap_sprintf(
 			"%s"
@@ -969,13 +1322,13 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 			"# Profile Description:\n"
 			"# %s\n"
 			"#\n"
-			"# Profile ID:  %s\n"
+			"%s"
 			"# Benchmark ID:  %s\n"
 			"# Benchmark Version:  %s\n"
 			"# XCCDF Version:  %s\n"
 			"#\n"
 			"# This file was generated by OpenSCAP %s using:\n"
-			"# $ oscap xccdf generate fix --profile %s --fix-type %s xccdf-file.xml\n"
+			"# $ oscap xccdf generate fix%s%s --fix-type %s %s\n"
 			"#\n"
 			"# This %s is generated from an OpenSCAP profile without preliminary evaluation.\n"
 			"# It attempts to fix every selected rule, even if the system is already compliant.\n"
@@ -986,13 +1339,15 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 			"###############################################################################\n\n",
 			shebang_with_newline, remediation_type, profile_title,
 			commented_profile_description,
-			profile_id, benchmark_id, benchmark_version_info, xccdf_version_name,
-			oscap_version, profile_id, format, remediation_type,
+			profile_id_banner, benchmark_id, benchmark_version_info, xccdf_version_name,
+			oscap_version, tailoring_option, profile_option, format, input_file_name, remediation_type,
 			remediation_type, how_to_apply
 		);
 
+		free(profile_id_banner);
+		free(tailoring_option);
 		free(commented_profile_description);
-
+		free(profile_option);
 	} else {
 		// Results-based remediation fix
 		const char *start_time = xccdf_result_get_start_time(result);
@@ -1026,19 +1381,102 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 			result_id, format, remediation_type, remediation_type, how_to_apply
 		);
 	}
-	free(profile_title);
 
-	if (ansible_script) {
+	if (oscap_streq(sys, "urn:xccdf:fix:script:ansible")) {
 		char *ansible_fix_header = oscap_sprintf(
 			"---\n"
 			"%s\n"
 			"- hosts: all\n",
 			fix_header);
 		free(fix_header);
+		free(profile_title);
 		return _write_text_to_fd_and_free(output_fd, ansible_fix_header);
+	} else if (oscap_streq(sys, "urn:redhat:osbuild:blueprint")) {
+		char *customization_instructions = "# If your hardening data stream is not part of the 'scap-security-guide' package\n"
+			"# provide the absolute path to it (from the root of the image filesystem).\n"
+			"# datastream = \"/usr/share/xml/scap/ssg/content/ssg-xxxxx-ds.xml\"\n";
+		char *blueprint_fix_header = oscap_sprintf(
+			"%s"
+			"name = \"hardened_%s\"\n"
+			"description = \"%s\"\n"
+			"version = \"%s\"\n\n"
+			"[customizations.openscap]\n"
+			"profile_id = \"%s\"\n"
+			"%s\n",
+			fix_header, profile_id, profile_title, benchmark_version_info, profile_id, raw == 0 ? customization_instructions : "");
+		free(fix_header);
+		free(profile_title);
+		return _write_text_to_fd_and_free(output_fd, blueprint_fix_header);
 	} else {
+		free(profile_title);
 		return _write_text_to_fd_and_free(output_fd, fix_header);
 	}
+}
+
+static inline void _format_and_write_list_into_blueprint_fd(struct oscap_list *list_, const char *separator, int output_fd)
+{
+	struct oscap_iterator *it = oscap_iterator_new(list_);
+	while(oscap_iterator_has_more(it)) {
+		char *var_line = (char *)oscap_iterator_next(it);
+		_write_text_to_fd(output_fd, var_line);
+		if (oscap_iterator_has_more(it))
+			_write_text_to_fd(output_fd, separator);
+	}
+	oscap_iterator_free(it);
+}
+
+static int _xccdf_policy_generate_fix_blueprint(struct oscap_list *rules_to_fix, struct xccdf_policy *policy, const char *sys, int output_fd)
+{
+	int ret = 0;
+	struct blueprint_customizations customizations = {
+		.generic = oscap_list_new(),
+		.services_enable = oscap_list_new(),
+		.services_disable = oscap_list_new(),
+		.services_mask = oscap_list_new(),
+		.kernel_append = oscap_list_new()
+	};
+
+	struct oscap_iterator *rules_to_fix_it = oscap_iterator_new(rules_to_fix);
+	while (oscap_iterator_has_more(rules_to_fix_it)) {
+		struct xccdf_rule *rule = (struct xccdf_rule*)oscap_iterator_next(rules_to_fix_it);
+		ret = _xccdf_policy_rule_generate_blueprint_fix(policy, rule, sys, &customizations);
+		if (ret != 0)
+			break;
+	}
+	oscap_iterator_free(rules_to_fix_it);
+
+	struct oscap_iterator *generic_it = oscap_iterator_new(customizations.generic);
+	while(oscap_iterator_has_more(generic_it)) {
+		char *var_line = (char *) oscap_iterator_next(generic_it);
+		_write_text_to_fd(output_fd, var_line);
+	}
+	_write_text_to_fd(output_fd, "\n");
+	oscap_iterator_free(generic_it);
+
+	_write_text_to_fd(output_fd, "[customizations.kernel]\nappend = \"");
+	_format_and_write_list_into_blueprint_fd(customizations.kernel_append, " ", output_fd);
+	_write_text_to_fd(output_fd, "\"\n\n");
+
+	_write_text_to_fd(output_fd, "[customizations.services]\n");
+	_write_text_to_fd(output_fd, "enabled = [");
+	_format_and_write_list_into_blueprint_fd(customizations.services_enable, ",", output_fd);
+	_write_text_to_fd(output_fd, "]\n");
+
+	_write_text_to_fd(output_fd, "disabled = [");
+	_format_and_write_list_into_blueprint_fd(customizations.services_disable, ",", output_fd);
+	_write_text_to_fd(output_fd, "]\n");
+
+	_write_text_to_fd(output_fd, "masked = [");
+	_format_and_write_list_into_blueprint_fd(customizations.services_mask, ",", output_fd);
+	_write_text_to_fd(output_fd, "]\n\n");
+
+	oscap_list_free(customizations.services_mask, free);
+	oscap_list_free(customizations.services_disable, free);
+	oscap_list_free(customizations.kernel_append, free);
+	oscap_list_free(customizations.services_enable, free);
+	oscap_list_free(customizations.generic, free);
+
+	return ret;
 }
 
 static int _xccdf_policy_generate_fix_ansible(struct oscap_list *rules_to_fix, struct xccdf_policy *policy, const char *sys, int output_fd)
@@ -1091,10 +1529,342 @@ static int _xccdf_policy_generate_fix_other(struct oscap_list *rules_to_fix, str
 	return ret;
 }
 
-int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *result, const char *sys, int output_fd)
+static void _write_it_comma_list(struct oscap_iterator *it, const char *option, int output_fd)
+{
+	if (!oscap_iterator_has_more(it))
+		return;
+	_write_text_to_fd(output_fd, " ");
+	_write_text_to_fd(output_fd, option);
+	while (oscap_iterator_has_more(it)) {
+		char *item = (char *) oscap_iterator_next(it);
+		_write_text_to_fd(output_fd, item);
+		if (oscap_iterator_has_more(it))
+			_write_text_to_fd(output_fd, ",");
+	}
+}
+
+static int _generate_kickstart_services(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	struct oscap_iterator *service_disable_it = oscap_iterator_new(cmds->service_disable);
+	struct oscap_iterator *service_enable_it = oscap_iterator_new(cmds->service_enable);
+	if (oscap_iterator_has_more(service_disable_it) || oscap_iterator_has_more(service_enable_it)) {
+		if (raw == 0)
+			_write_text_to_fd(output_fd, "# Disable and enable systemd services (required for security compliance)\n");
+		_write_text_to_fd(output_fd, "services");
+		_write_it_comma_list(service_disable_it, "--disabled=", output_fd);
+		_write_it_comma_list(service_enable_it, "--enabled=", output_fd);
+		_write_text_to_fd(output_fd, "\n\n");
+	}
+	oscap_iterator_free(service_disable_it);
+	oscap_iterator_free(service_enable_it);
+	return 0;
+}
+
+static int _generate_kickstart_firewall(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	struct oscap_iterator *disable_it = oscap_iterator_new(cmds->firewall_disable);
+	struct oscap_iterator *enable_it = oscap_iterator_new(cmds->firewall_enable);
+	if (oscap_iterator_has_more(disable_it) || oscap_iterator_has_more(enable_it)) {
+		if (raw == 0)
+			_write_text_to_fd(output_fd, "# Disable and enable services in firewall (required for security compliance)\n");
+		_write_text_to_fd(output_fd, "firewall");
+		_write_it_comma_list(disable_it, "--remove-service=", output_fd);
+		_write_it_comma_list(enable_it, "--service=", output_fd);
+		_write_text_to_fd(output_fd, "\n\n");
+	}
+	oscap_iterator_free(disable_it);
+	oscap_iterator_free(enable_it);
+	return 0;
+}
+
+static int _generate_kickstart_packages(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	if (raw == 0)
+		_write_text_to_fd(output_fd, "# Packages selection (required for security compliance)\n");
+	_write_text_to_fd(output_fd, "%packages\n");
+	/* openscap-scanner and scap-security-guide needs to be installed because we will run oscap in the %post section */
+	_write_text_to_fd(output_fd, "openscap-scanner\n");
+	_write_text_to_fd(output_fd, "scap-security-guide\n");
+	struct oscap_iterator *package_install_it = oscap_iterator_new(cmds->package_install);
+	while (oscap_iterator_has_more(package_install_it)) {
+		char *package = (char *) oscap_iterator_next(package_install_it);
+		_write_text_to_fd(output_fd, package);
+		_write_text_to_fd(output_fd, "\n");
+	}
+	oscap_iterator_free(package_install_it);
+	struct oscap_iterator *package_remove_it = oscap_iterator_new(cmds->package_remove);
+	while (oscap_iterator_has_more(package_remove_it)) {
+		char *package = (char *) oscap_iterator_next(package_remove_it);
+		_write_text_to_fd(output_fd, "-");
+		_write_text_to_fd(output_fd, package);
+		_write_text_to_fd(output_fd, "\n");
+	}
+	oscap_iterator_free(package_remove_it);
+	_write_text_to_fd(output_fd, "%end\n");
+	_write_text_to_fd(output_fd, "\n");
+	return 0;
+}
+
+static int _write_tailoring_to_fd(struct oscap_source *tailoring, int output_fd)
+{
+	if (tailoring == NULL)
+		return 0;
+	_write_text_to_fd(output_fd, "cat >/root/oscap_tailoring.xml <<END_OF_TAILORING\n");
+	if (oscap_source_to_fd(tailoring, output_fd) != 0)
+		return -1;
+	_write_text_to_fd(output_fd, "END_OF_TAILORING\n");
+	return 0;
+}
+
+static int _generate_kickstart_oscap_post(struct kickstart_commands *cmds, const char *profile_id, const char *input_path, struct oscap_source *tailoring, int output_fd)
+{
+	_write_text_to_fd(output_fd, "%post --erroronfail\n");
+	if (_write_tailoring_to_fd(tailoring, output_fd) != 0)
+		return -1;
+	const char *fmt = "oscap xccdf eval --remediate%s--results-arf /root/oscap_arf.xml --report /root/oscap_report.html%s/usr/share/xml/scap/ssg/content/%s\n";
+	const char *tailoring_part;
+	if (tailoring != NULL) {
+		tailoring_part = " --tailoring-file /root/oscap_tailoring.xml ";
+	} else {
+		tailoring_part = " ";
+	}
+	char *profile_part;
+	if (profile_id != NULL) {
+		profile_part = oscap_sprintf(" --profile '%s' ", profile_id);
+	} else {
+		profile_part = strdup(" ");
+	}
+	char *dup = strdup(input_path);
+	char *basename = oscap_basename(dup);
+	free(dup);
+	char *oscap_command = oscap_sprintf(fmt, tailoring_part, profile_part, basename);
+	free(profile_part);
+	free(basename);
+	_write_text_to_fd_and_free(output_fd, oscap_command);
+	_write_text_to_fd(output_fd, "[ $? -eq 0 -o $? -eq 2 ] || exit 1\n");
+	_write_text_to_fd(output_fd, "%end\n");
+	_write_text_to_fd(output_fd, "\n");
+	return 0;
+}
+
+static int _generate_kickstart_pre(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	struct oscap_iterator *pre_it = oscap_iterator_new(cmds->pre);
+	while (oscap_iterator_has_more(pre_it)) {
+		if (raw == 0)
+			_write_text_to_fd(output_fd, "# Additional %pre section (required for security compliance)\n");
+		char *pre_content = (char *) oscap_iterator_next(pre_it);
+		_write_text_to_fd(output_fd, pre_content);
+		_write_text_to_fd(output_fd, "\n");
+	}
+	oscap_iterator_free(pre_it);
+	return 0;
+}
+
+static int _generate_kickstart_post(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	struct oscap_iterator *post_it = oscap_iterator_new(cmds->post);
+	while (oscap_iterator_has_more(post_it)) {
+		if (raw == 0)
+			_write_text_to_fd(output_fd, "# Additional %post section (required for security compliance)\n");
+		char *post_content = (char *) oscap_iterator_next(post_it);
+		_write_text_to_fd(output_fd, post_content);
+		_write_text_to_fd(output_fd, "\n");
+	}
+	oscap_iterator_free(post_it);
+	return 0;
+}
+
+const char *common_partition = (
+	"zerombr\n"
+	"clearpart --all --initlabel\n"
+	"reqpart --add-boot\n"
+	"part pv.01 --grow --size=1\n"
+	"volgroup system pv.01\n"
+	"logvol / --name=root --vgname=system --size=2000 --grow\n"
+	"logvol swap --name=swap --vgname=system --size=1000\n"
+);
+
+/* Fallback partition layout for profiles that don't specify partitioning layout */
+/* We need to specify at least some layout in the kickstart to make the installation fully automated. */
+const char *fallback_partition = (
+	"zerombr\n"
+	"clearpart --all --initlabel\n"
+	"autopart --type=lvm\n"
+);
+
+static int _generate_kickstart_logvol(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	struct oscap_iterator *logvol_it = oscap_iterator_new(cmds->logvol);
+	if (oscap_iterator_has_more(logvol_it)) {
+		if (raw == 0) {
+			_write_text_to_fd(output_fd, "# Create partition layout scheme (required for security compliance)\n");
+			_write_text_to_fd(output_fd, common_partition);
+		} else {
+			_write_text_to_fd(output_fd, "# %partitions\n");
+			_write_text_to_fd(output_fd, common_partition);
+			_write_text_to_fd(output_fd, "# %logvols\n");
+		}
+	} else {
+		if (raw == 0) {
+			_write_text_to_fd(output_fd, "# Default partition layout scheme (optional)\n");
+			_write_text_to_fd(output_fd, fallback_partition);
+		}
+	}
+	while (oscap_iterator_has_more(logvol_it)) {
+		struct logvol_cmd *command = (struct logvol_cmd *) oscap_iterator_next(logvol_it);
+		char *name = strdup(command->path);
+		oscap_strrm(name, "/");
+		char *fmt = oscap_sprintf("logvol %s --name=%s --vgname=system --size=%s\n", command->path, name, command->size);
+		_write_text_to_fd(output_fd, fmt);
+		free(name);
+		free(fmt);
+		if (!oscap_iterator_has_more(logvol_it)) {
+			if (raw > 0)
+				_write_text_to_fd(output_fd, "# %end\n");
+			_write_text_to_fd(output_fd, "\n");
+		}
+	}
+	oscap_iterator_free(logvol_it);
+	return 0;
+}
+
+static int _generate_kickstart_kdump(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	if (!cmds->enable_kdump) {
+		if (raw == 0)
+			_write_text_to_fd(output_fd, "# Disable the kdump kernel crash dumping mechanism (required for security compliance)\n");
+		_write_text_to_fd(output_fd,
+			"%addon com_redhat_kdump --disable\n"
+			"%end\n"
+			"\n"
+		);
+	}
+	return 0;
+}
+
+static int _generate_kickstart_bootloader(struct kickstart_commands *cmds, int output_fd, int raw)
+{
+	struct oscap_iterator *bl_it = oscap_iterator_new(cmds->bootloader);
+	if (!oscap_iterator_has_more(bl_it)) {
+		oscap_iterator_free(bl_it);
+		return 0;
+	}
+	if (raw == 0)
+		_write_text_to_fd(output_fd, "# Configure boot loader options (required for security compliance)\n");
+	_write_text_to_fd(output_fd, "bootloader --append=\"");
+	while (oscap_iterator_has_more(bl_it)) {
+		char *optval = (char *) oscap_iterator_next(bl_it);
+		_write_text_to_fd(output_fd, optval);
+		if (oscap_iterator_has_more(bl_it)) {
+			_write_text_to_fd(output_fd, " ");
+		} else {
+			_write_text_to_fd(output_fd, "\"\n");
+			_write_text_to_fd(output_fd, "\n");
+		}
+	}
+	oscap_iterator_free(bl_it);
+	return 0;
+}
+
+static void logvol_cmd_free(void *ptr)
+{
+	struct logvol_cmd *cmd = (struct logvol_cmd *) ptr;
+	free(cmd->path);
+	free(cmd->size);
+	free(cmd);
+}
+
+static int _xccdf_policy_generate_fix_kickstart(struct oscap_list *rules_to_fix, struct xccdf_policy *policy, const char *sys, const char *input_file_name, struct oscap_source *tailoring, int raw, int output_fd)
+{
+	int ret = 0;
+	struct kickstart_commands cmds = {
+		.package_install = oscap_list_new(),
+		.package_remove = oscap_list_new(),
+		.service_enable = oscap_list_new(),
+		.service_disable = oscap_list_new(),
+		.pre = oscap_list_new(),
+		.post = oscap_list_new(),
+		.logvol = oscap_list_new(),
+		.bootloader = oscap_list_new(),
+		.firewall_enable = oscap_list_new(),
+		.firewall_disable = oscap_list_new(),
+		.enable_kdump = true,
+	};
+
+	struct oscap_iterator *rules_to_fix_it = oscap_iterator_new(rules_to_fix);
+	while (oscap_iterator_has_more(rules_to_fix_it)) {
+		struct xccdf_rule *rule = (struct xccdf_rule *) oscap_iterator_next(rules_to_fix_it);
+		ret = _xccdf_policy_rule_generate_kickstart_fix(policy, rule, sys, &cmds);
+		if (ret != 0)
+			break;
+	}
+	oscap_iterator_free(rules_to_fix_it);
+
+	const char *common_template = (
+		"\n# Default values for automated installation (optional)\n"
+		"lang en_US.UTF-8\n"
+		"keyboard --vckeymap us\n"
+		"timezone --utc America/New_York\n"
+		"\n"
+		"# Root password is required for system rescue tasks (optional)\n"
+		"rootpw %s\n"
+		"\n"
+	);
+	if (raw == 0) {
+		char *password = oscap_generate_random_string(24, NULL);
+		char *common = oscap_sprintf(common_template, password);
+		_write_text_to_fd(output_fd, common);
+		free(password);
+		free(common);
+	}
+
+	_generate_kickstart_pre(&cmds, output_fd, raw);
+
+	_generate_kickstart_logvol(&cmds, output_fd, raw);
+
+	_generate_kickstart_bootloader(&cmds, output_fd, raw);
+
+	_generate_kickstart_kdump(&cmds, output_fd, raw);
+
+	_generate_kickstart_firewall(&cmds, output_fd, raw);
+
+	_generate_kickstart_services(&cmds, output_fd, raw);
+
+	_generate_kickstart_packages(&cmds, output_fd, raw);
+
+	if (raw == 0)
+		_write_text_to_fd(output_fd, "# Perform OpenSCAP hardening (required for security compliance)\n");
+	const char *profile_id = xccdf_profile_get_id(xccdf_policy_get_profile(policy));
+	if (_generate_kickstart_oscap_post(&cmds, profile_id, input_file_name, tailoring, output_fd) != 0) {
+		ret = -1;
+		goto cleanup;
+	}
+
+	_generate_kickstart_post(&cmds, output_fd, raw);
+
+	if (raw == 0)
+		_write_text_to_fd(output_fd, "# Reboot after the installation is complete\nreboot\n");
+
+cleanup:
+	oscap_list_free(cmds.package_install, free);
+	oscap_list_free(cmds.package_remove, free);
+	oscap_list_free(cmds.service_enable, free);
+	oscap_list_free(cmds.service_disable, free);
+	oscap_list_free(cmds.pre, free);
+	oscap_list_free(cmds.post, free);
+	oscap_list_free(cmds.logvol, logvol_cmd_free);
+	oscap_list_free(cmds.bootloader, free);
+	oscap_list_free(cmds.firewall_enable, free);
+	oscap_list_free(cmds.firewall_disable, free);
+	return ret;
+}
+
+int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *result, const char *sys, const char *input_file_name, struct oscap_source *tailoring, int output_fd, int raw)
 {
 	__attribute__nonnull__(policy);
 	int ret = 0;
+	const char *tailoring_file_name = tailoring ? oscap_source_get_filepath(tailoring) : NULL;
 
 	struct oscap_list *rules_to_fix = oscap_list_new();
 	if (result == NULL) {
@@ -1108,7 +1878,7 @@ int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *
 			return 1;
 		}
 
-		if (_write_script_header_to_fd(policy, result, sys, output_fd) != 0) {
+		if (_write_script_header_to_fd(policy, result, sys, input_file_name, tailoring_file_name, output_fd, raw) != 0) {
 			oscap_list_free(rules_to_fix, NULL);
 			return 1;
 		}
@@ -1125,7 +1895,7 @@ int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *
 	else {
 		dI("Generating result-oriented fixes for policy(result/@id=%s)", xccdf_result_get_id(result));
 
-		if (_write_script_header_to_fd(policy, result, sys, output_fd) != 0) {
+		if (_write_script_header_to_fd(policy, result, sys, input_file_name, tailoring_file_name, output_fd, raw) != 0) {
 			oscap_list_free(rules_to_fix, NULL);
 			return 1;
 		}
@@ -1145,6 +1915,10 @@ int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *
 	// in Ansible we have to generate variables first and then tasks
 	if (strcmp(sys, "urn:xccdf:fix:script:ansible") == 0) {
 		ret = _xccdf_policy_generate_fix_ansible(rules_to_fix, policy, sys, output_fd);
+	} else if (strcmp(sys, "urn:redhat:osbuild:blueprint") == 0) {
+		ret = _xccdf_policy_generate_fix_blueprint(rules_to_fix, policy, sys, output_fd);
+	} else if (strcmp(sys, "urn:xccdf:fix:script:kickstart") == 0) {
+		ret = _xccdf_policy_generate_fix_kickstart(rules_to_fix, policy, sys, input_file_name, tailoring, raw, output_fd);
 	} else {
 		ret =  _xccdf_policy_generate_fix_other(rules_to_fix, policy, sys, output_fd);
 	}
@@ -1153,3 +1927,4 @@ int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *
 
 	return ret;
 }
+

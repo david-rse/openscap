@@ -41,13 +41,10 @@
 #if defined(OVAL_PROBES_ENABLED)
 # include <oval_probe.h>
 #endif
-#include <cvss_score.h>
 #include <xccdf_benchmark.h>
 #include <xccdf_session.h>
 #include <cpe_dict.h>
 #include <cpe_name.h>
-#include <cve_nvd.h>
-#include <cvrf.h>
 
 #define OSCAP_PRODUCTNAME "cpe:/a:open-scap:oscap"
 #define OSCAP_ERR_MSG "OpenSCAP Error:"
@@ -75,7 +72,7 @@ struct oscap_module {
 // standard oscap CLI exit statuses
 enum oscap_exitcode {
     OSCAP_OK             =   0, // successful exit
-    OSCAP_ERROR          =   1, // an error occured
+    OSCAP_ERROR          =   1, // an error occurred
     OSCAP_FAIL           =   2, // a process (e.g. scan or validation) failed
     OSCAP_ERR_FETCH      =   1, // cold not fetch input file (same as error for now)
     OSCAP_BADARGS        = 100, // bad commandline arguments
@@ -85,8 +82,6 @@ enum oscap_exitcode {
     // end of list
     OSCAP_EXITCODES_END_ = 120  // any code returned shall not be higher than this
 };
-
-struct cvss_impact;
 
 struct ds_action {
 	char* file;
@@ -104,13 +99,6 @@ struct cpe_action {
 struct cve_action {
         char * file;
         char * cve;
-};
-
-struct cvrf_action {
-	int index;
-	char *f_cvrf;
-	char *f_results;
-	char *f_output;
 };
 
 struct oscap_action {
@@ -134,19 +122,16 @@ struct oscap_action {
 	char *f_verbose_log;
 	/* others */
         char *profile;
-	const char *rule;
+	struct oscap_stringlist *rules;
+	struct oscap_stringlist *skip_rules;
         char *format;
-        const char *tmpl;
         char *id;
-        char *oval_template;
-        char *cvss_vector;
         int hide_profile_info;
         char *stylesheet;
 	char *tailoring_file;
 	char *tailoring_id;
 	char *cpe;
 
-        struct cvss_impact *cvss_impact;
 	struct ds_action* ds_action;
 	struct cpe_action * cpe_action;
 	struct cve_action * cve_action;
@@ -168,12 +153,15 @@ struct oscap_action {
 	int without_sys_chars;
 	int thin_results;
 	int remediate;
-	char *sce_template;
 	int check_engine_results;
 	int export_variables;
         int list_dynamic;
 	char *verbosity_level;
 	char *fix_type;
+	char *local_files;
+	char *reference;
+	int references;
+	int raw;
 };
 
 int app_xslt(const char *infile, const char *xsltfile, const char *outfile, const char **params);
@@ -197,10 +185,8 @@ int evaluate_suffix_match_result(int suffix_match_result, const char *profile_su
 extern struct oscap_module OSCAP_ROOT_MODULE;
 extern struct oscap_module OSCAP_DS_MODULE;
 extern struct oscap_module OSCAP_XCCDF_MODULE;
-extern struct oscap_module OSCAP_CVSS_MODULE;
 extern struct oscap_module OSCAP_OVAL_MODULE;
 extern struct oscap_module OSCAP_CVE_MODULE;
-extern struct oscap_module OSCAP_CVRF_MODULE;
 extern struct oscap_module OSCAP_CPE_MODULE;
 extern struct oscap_module OSCAP_INFO_MODULE;
 

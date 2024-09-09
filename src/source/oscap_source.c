@@ -153,6 +153,16 @@ void oscap_source_free(struct oscap_source *source)
 	}
 }
 
+void oscap_source_free_xmlDoc(struct oscap_source *source)
+{
+	if (source != NULL) {
+		if (source->xml.doc != NULL) {
+			xmlFreeDoc(source->xml.doc);
+			source->xml.doc = NULL;
+		}
+	}
+}
+
 /**
  * Returns human readable description of oscap_source origin
  */
@@ -356,25 +366,14 @@ int oscap_source_validate(struct oscap_source *source, xml_reporter reporter, vo
 	return ret;
 }
 
-int oscap_source_validate_schematron(struct oscap_source *source, const char *outfile)
+int oscap_source_validate_schematron(struct oscap_source *source)
 {
-	FILE *outfile_fd = stdout;
-	if (outfile != NULL) {
-		outfile_fd = fopen(outfile, "w");
-		if (outfile_fd == NULL) {
-			dE("Can't open %s: %s", outfile, strerror(errno));
-			return -1;
-		}
-	}
 	oscap_document_type_t scap_type = oscap_source_get_scap_type(source);
 	const char *schema_version = oscap_source_get_schema_version(source);
 	if (!schema_version) {
 		schema_version = "unknown schema version";
 	}
-	int ret = oscap_source_validate_schematron_priv(source, scap_type,
-		schema_version, outfile_fd);
-	if (outfile != NULL)
-		fclose(outfile_fd);
+	int ret = oscap_source_validate_schematron_priv(source, scap_type, schema_version);
 	if (ret != 0) {
 		const char *type_name = oscap_document_type_to_string(scap_type);
 		const char *origin = oscap_source_readable_origin(source);
@@ -415,12 +414,6 @@ const char *oscap_source_get_schema_version(struct oscap_source *source)
 			case OSCAP_DOCUMENT_CPE_LANGUAGE:
 				source->origin.version = cpe_lang_model_detect_version_priv(reader);
 				break;
-			case OSCAP_DOCUMENT_CVE_FEED:
-				source->origin.version = oscap_strdup("2.0");
-				break;
-			case OSCAP_DOCUMENT_CVRF_FEED:
-				source->origin.version = oscap_strdup("1.1");
-				break;
 			case OSCAP_DOCUMENT_SCE_RESULT:
 				source->origin.version = oscap_strdup("1.0");
 				break;
@@ -448,6 +441,17 @@ int oscap_source_save_as(struct oscap_source *source, const char *filename)
 		return -1;
 	}
 	return oscap_xml_save_filename(target, doc) == 1 ? 0 : -1;
+}
+
+int oscap_source_to_fd(struct oscap_source *source, int fd)
+{
+	xmlDoc *doc = oscap_source_get_xmlDoc(source);
+	if (doc == NULL) {
+		oscap_seterr(OSCAP_EFAMILY_OSCAP, "Could not save document: DOM representation not available.");
+		return -1;
+	}
+	return oscap_xml_save_fd(fd, doc) == 1 ? 0 : -1;
+
 }
 
 int oscap_source_get_raw_memory(struct oscap_source *source, char **buffer, size_t *size)

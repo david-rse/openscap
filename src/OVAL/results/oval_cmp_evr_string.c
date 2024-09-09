@@ -30,6 +30,7 @@
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 #include "oval_cmp_evr_string_impl.h"
 #include "oval_definitions.h"
 #include "oval_types.h"
@@ -37,7 +38,12 @@
 #include "common/_error.h"
 
 #ifdef HAVE_RPMVERCMP
+#ifdef RPM418_FOUND
+#include <rpm/rpmver.h>
+#include <rpm/rpmstring.h>
+#else
 #include <rpm/rpmlib.h>
+#endif
 #else
 #ifdef OS_WINDOWS
 #include <malloc.h>
@@ -57,6 +63,9 @@ static void parseEVR(char *evr, const char **ep, const char **vp, const char **r
 
 oval_result_t oval_evr_string_cmp(const char *state, const char *sys, oval_operation_t operation)
 {
+	if (state == NULL || sys == NULL) {
+		return OVAL_RESULT_ERROR;
+	}
 	int result = rpmevrcmp(sys, state);
 
 	if (operation == OVAL_OPERATION_EQUALS) {
@@ -82,8 +91,8 @@ static inline int rpmevrcmp(const char *a, const char *b)
 	/* This mimics rpmevrcmp which is not exported by rpmlib version 4.
 	 * Code inspired by rpm.labelCompare() from rpm4/python/header-py.c
 	 */
-	const char *a_epoch, *a_version, *a_release;
-	const char *b_epoch, *b_version, *b_release;
+	const char *a_epoch = NULL, *a_version = NULL, *a_release = NULL;
+	const char *b_epoch = NULL, *b_version = NULL, *b_release = NULL;
 	char *a_copy, *b_copy;
 	int result;
 
@@ -127,6 +136,9 @@ static void parseEVR(char *evr, const char **ep, const char **vp, const char **r
 	const char *version;			/* assume only version is present */
 	const char *release;
 	char *s, *se;
+
+	if (!evr)
+		return;
 
 	s = evr;
 	while (*s && risdigit(*s)) s++;		/* s points to epoch terminator */
@@ -387,8 +399,8 @@ static int dpkg_version_compare(struct dpkg_version *a, struct dpkg_version *b)
 oval_result_t oval_debian_evr_string_cmp(const char *state, const char *sys, oval_operation_t operation)
 {
 	struct dpkg_version a, b;
-	const char *a_epoch, *a_version, *a_release;
-	const char *b_epoch, *b_version, *b_release;
+	const char *a_epoch = NULL, *a_version = NULL, *a_release = NULL;
+	const char *b_epoch = NULL, *b_version = NULL, *b_release = NULL;
 	char *a_copy, *b_copy;
 	long aux;
 
@@ -397,12 +409,10 @@ oval_result_t oval_debian_evr_string_cmp(const char *state, const char *sys, ova
 	parseEVR(a_copy, &a_epoch, &a_version, &a_release);
 	parseEVR(b_copy, &b_epoch, &b_version, &b_release);
 
-	if (!a_epoch || !b_epoch) {
-		oscap_seterr(OSCAP_EFAMILY_OVAL, "Invalid epoch.");
-		free(a_copy);
-		free(b_copy);
-		return OVAL_RESULT_ERROR;
-	}
+	if (!a_epoch)
+		a_epoch = "0";
+	if (!b_epoch)
+		b_epoch = "0";
 
 	aux = strtol(a_epoch, NULL, 10);
 	if (aux < INT_MIN || aux > INT_MAX) {
@@ -442,7 +452,7 @@ oval_result_t oval_debian_evr_string_cmp(const char *state, const char *sys, ova
 	case OVAL_OPERATION_LESS_THAN_OR_EQUAL:
 		return ((result <= 0) ? OVAL_RESULT_TRUE : OVAL_RESULT_FALSE);
 	default:
-		oscap_seterr(OSCAP_EFAMILY_OVAL, "Invalid type of operation in rpm version comparison: %d.", operation);
+		oscap_seterr(OSCAP_EFAMILY_OVAL, "Invalid type of operation in dpkg version comparison: %d.", operation);
 	}
 
 	return OVAL_RESULT_ERROR;

@@ -31,31 +31,24 @@ import re
 
 logger = logging.getLogger("openscap")
 
-from sys import version_info
-if version_info >= (2, 6, 0):
-    def _import_helper():
-        from os.path import dirname
-        import imp
-        fp = None
-        try:
-            fp, pathname, description = imp.find_module(
-                '_openscap_py', [dirname(__file__)])
-        except ImportError:
-            import _openscap_py as OSCAP
-            return OSCAP
-        if fp is not None:
-            try:
-                _mod = imp.load_module(
-                    '_openscap_py', fp, pathname, description)
-            finally:
-                fp.close()
-            return _mod
-    OSCAP = _import_helper()
-    del _import_helper
-else:
-    import _openscap_py as OSCAP
 
-del version_info
+def _import_helper():
+    from os.path import dirname
+    import importlib.machinery
+    import importlib.util
+    spec = importlib.machinery.PathFinder.find_spec('_openscap_py', [dirname(__file__)])
+    if not spec:
+        spec = importlib.machinery.PathFinder.find_spec('_openscap_py')
+    if not spec:
+        raise ImportError("Unable to import _openscap_py module, extra path: '%s'."
+                          % dirname(__file__))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+OSCAP = _import_helper()
+del _import_helper
 
 import os
 
@@ -1019,23 +1012,6 @@ class CPE_Class(OSCAP_Object):
         return "<Oscap Object of type 'CPE Class' at %s>" % (hex(id(self)),)
 
 # ------------------------------------------------------------------------------------------------------------
-# CVSS
-
-
-class CVSS_Class(OSCAP_Object):
-    """
-    CVSS Class
-    """
-
-    def __init__(self):
-        dict.__setattr__(self, "object", "cvss")
-        dict.__setattr__(self, "version", OSCAP.cvss_model_supported())
-        pass
-
-    def __repr__(self):
-        return "<Oscap Object of type 'CVSS Class' at %s>" % (hex(id(self)),)
-
-# ------------------------------------------------------------------------------------------------------------
 # SCE
 
 
@@ -1067,6 +1043,5 @@ xccdf = XCCDF_Class()
 oval = OVAL_Class()
 cve = CVE_Class()
 cpe = CPE_Class()
-cvss = CVSS_Class()
 sce = SCE_Class()
 common = OSCAP_Object("oscap")

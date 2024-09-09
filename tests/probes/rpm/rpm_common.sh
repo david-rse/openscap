@@ -9,6 +9,12 @@ RPMBASE="${builddir}/tests/probes/rpm"
 RPMTEST="${RPMBASE}/root"
 RPMBUILD="${RPMBASE}/build"
 
+# Since Fedora 36 RPM database location changed, see
+# https://fedoraproject.org/wiki/Changes/RelocateRPMToUsr
+# However, /var/lib/rpm/ still works as it is a symlink to
+# the new path, /usr/lib/sysimage/rpm/, in Fedora >= 36
+# Therefore, always use /var/lib/rpm/ as it always works.
+RPMDB_PATH="/var/lib/rpm/"
 
 function rpm_build {
     require "rpmbuild" || return 255
@@ -28,8 +34,8 @@ function rpm_prepare_offline {
     cp /usr/lib/rpm/rpmrc ${RPMTEST}/usr/lib/rpm/rpmrc
     cp /usr/lib/rpm/macros ${RPMTEST}/usr/lib/rpm/macros
     rpm_build
-    rpm -i ${RPMBUILD}/RPMS/noarch/foobar-1.0-1.noarch.rpm --badreloc --relocate="/etc=${RPMTEST}/etc/" --dbpath="${RPMTEST}/var/lib/rpm/"
-    rpm -i ${RPMBUILD}/RPMS/noarch/foo-1.0-1.noarch.rpm --badreloc --relocate="/etc=${RPMTEST}/etc/" --dbpath="${RPMTEST}/var/lib/rpm/"
+    rpm -i ${RPMBUILD}/RPMS/noarch/foobar-1.0-1.noarch.rpm --badreloc --relocate="/etc=${RPMTEST}/etc/" --dbpath="${RPMTEST}${RPMDB_PATH}"
+    rpm -i ${RPMBUILD}/RPMS/noarch/foo-1.0-1.noarch.rpm --badreloc --relocate="/etc=${RPMTEST}/etc/" --dbpath="${RPMTEST}${RPMDB_PATH}"
 }
 
 function rpm_cleanup_offline {
@@ -40,7 +46,7 @@ function rpm_cleanup_offline {
 function rpm_query {
     require "rpm" || return 255
     if [ -d "$OSCAP_PROBE_ROOT" ]; then
-        DB="--dbpath=$OSCAP_PROBE_ROOT/var/lib/rpm/"
+        DB="--dbpath=${OSCAP_PROBE_ROOT}${RPMDB_PATH}"
     fi
     rpm $DB --qf "%{$2}\n" -q $1 | head -
 }

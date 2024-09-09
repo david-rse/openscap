@@ -48,13 +48,15 @@
 #ifdef OSCAP_UNIX
 #include <sys/utsname.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <sys/socket.h>
+#include <pwd.h>
+#include <sys/types.h>
 #endif
 
 #if defined(OS_LINUX)
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <netdb.h>
 #include <sys/ioctl.h>
 #endif
 
@@ -63,10 +65,9 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <netdb.h>
 #include <netinet/in.h>
-#include <sys/sockio.h>
 #include <sys/ioctl.h>
+#include <sys/sockio.h>
 #endif
 
 #include "item.h"
@@ -205,6 +206,21 @@ static inline void _xccdf_result_fill_scanner(struct xccdf_result *result)
 	xccdf_result_add_target_fact(result, fact);
 }
 
+#if defined(OSCAP_UNIX)
+static inline char *_unix_get_name_fallback(void) {
+	struct passwd *passwd;
+
+	errno = 0;
+	passwd = getpwuid(getuid());
+	if (passwd == NULL || passwd->pw_name == NULL) {
+		dW("Error when calling getpwuid(): %d, %s\n", errno, strerror(errno));
+		return "\0";
+	}
+
+	return passwd->pw_name;
+}
+#endif
+
 static inline void _xccdf_result_fill_identity(struct xccdf_result *result)
 {
 	struct xccdf_identity *id = xccdf_identity_new();
@@ -219,7 +235,7 @@ static inline void _xccdf_result_fill_identity(struct xccdf_result *result)
 #ifdef OSCAP_UNIX
 	char *name = getlogin();
 	if (name == NULL)
-		name = cuserid(NULL);
+		name = _unix_get_name_fallback();
 	xccdf_identity_set_name(id, name);
 #elif defined(OS_WINDOWS)
 	GetUserName((TCHAR *) w32_username, &w32_usernamesize); /* XXX: Check the return value? */
@@ -253,6 +269,11 @@ static char *_get_etc_hostname(const char *oscap_probe_root)
 	int rc;
 
 	fp = oscap_fopen_with_prefix(oscap_probe_root, "/etc/hostname");
+
+	if (fp == NULL) {
+		dD("Trying to use /proc/sys/kernel/hostname instead of /etc/hostname");
+		fp = oscap_fopen_with_prefix(oscap_probe_root, "/proc/sys/kernel/hostname");
+	}
 
 	if (fp == NULL)
 		goto fail;

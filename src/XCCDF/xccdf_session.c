@@ -68,7 +68,9 @@ struct oval_content_resource {
 
 struct xccdf_session {
 	const char *filename;				///< File name of SCAP (SDS or XCCDF) file for this session.
-	const char *rule;				///< Single-rule feature: if not NULL, the session will work only with this one rule.
+	struct oscap_list *rules;
+	struct oscap_list *skip_rules;
+	const char *reference_parameter;
 	struct oscap_source *source;                    ///< Main source assigned with the main file (SDS or XCCDF)
 	char *temp_dir;					///< Temp directory used for decomposed component files.
 	struct {
@@ -87,6 +89,7 @@ struct xccdf_session {
 	} ds;
 	struct {
 		bool fetch_remote_resources;		///< Allows download of remote resources (not applicable when user sets custom oval files)
+		const char *local_files; ///< Path to the directory where local copies of remote components are located
 		download_progress_calllback_t progress;	///< Callback to report progress of download.
 		struct oval_content_resource **custom_resources;///< OVAL files required by user
 		struct oval_content_resource **resources;///< OVAL files referenced from XCCDF
@@ -102,7 +105,7 @@ struct xccdf_session {
 		char *arf_file;				///< Path to ARF file to export
 		char *xccdf_file;			///< Path to XCCDF file to export
 		char *xccdf_stig_viewer_file;		///< Path to STIG Viewer XCCDF file to export
-		char *report_file;			///< Path to HTML file to eport
+		char *report_file;			///< Path to HTML file to export
 		bool oval_results;			///< Shall be the OVAL results files exported?
 		bool oval_variables;			///< Shall be the OVAL variable files exported?
 		bool check_engine_plugins_results;	///< Shall the check engine plugins results be exported?
@@ -162,6 +165,8 @@ struct xccdf_session *xccdf_session_new_from_source(struct oscap_source *source)
 	session->oval.progress = download_progress_empty_calllback;
 	session->check_engine_plugins = oscap_list_new();
 	session->loading_flags = XCCDF_SESSION_LOAD_ALL;
+	session->rules = oscap_list_new();
+	session->skip_rules = oscap_list_new();
 
 	// We now have to switch up the oscap_sources in case we were given XCCDF tailoring
 
@@ -353,7 +358,43 @@ void xccdf_session_free(struct xccdf_session *session)
 	oscap_htable_free(session->oval.results_mapping, (oscap_destruct_func) free);
 	oscap_htable_free(session->oval.arf_report_mapping, (oscap_destruct_func) free);
 	oscap_signature_ctx_free(session->signature_ctx);
+	oscap_list_free(session->rules, (oscap_destruct_func) free);
+	oscap_list_free(session->skip_rules, (oscap_destruct_func) free);
 	free(session);
+}
+
+static void _xccdf_session_reset_oval_agents_syschar(struct xccdf_session *session)
+{
+	if (session->oval.agents != NULL) {
+		for (int i=0; session->oval.agents[i]; i++) {
+			oval_agent_reset_syschar(session->oval.agents[i]);
+		}
+	}
+}
+
+static void _xccdf_session_reset_oval_agents_results(struct xccdf_session *session)
+{
+	if (session->oval.agents != NULL) {
+		for (int i=0; session->oval.agents[i]; i++) {
+			oval_agent_reset_results(session->oval.agents[i]);
+		}
+	}
+}
+
+void xccdf_session_result_reset(struct xccdf_session *session)
+{
+	if (session->xccdf.policy_model != NULL) {
+		oscap_list_free(session->xccdf.policy_model->policies, (oscap_destruct_func) xccdf_policy_free);
+		session->xccdf.policy_model->policies = oscap_list_new();
+	}
+
+	oscap_list_free(session->rules, (oscap_destruct_func) free);
+	session->rules = oscap_list_new();
+	oscap_list_free(session->skip_rules, (oscap_destruct_func) free);
+	session->skip_rules = oscap_list_new();
+
+	_xccdf_session_reset_oval_agents_syschar(session);
+	_xccdf_session_reset_oval_agents_results(session);
 }
 
 const char *xccdf_session_get_filename(const struct xccdf_session *session)
@@ -368,7 +409,19 @@ bool xccdf_session_is_sds(const struct xccdf_session *session)
 
 void xccdf_session_set_rule(struct xccdf_session *session, const char *rule)
 {
-	session->rule = rule;
+	while (oscap_list_pop(session->rules, free))
+		;
+	oscap_list_add(session->rules, strdup(rule));
+}
+
+void xccdf_session_add_rule(struct xccdf_session *session, const char *rule)
+{
+	oscap_list_add(session->rules, strdup(rule));
+}
+
+void xccdf_session_skip_rule(struct xccdf_session *session, const char *rule)
+{
+	oscap_list_add(session->skip_rules, strdup(rule));
 }
 
 void xccdf_session_set_validation(struct xccdf_session *session, bool validate, bool full_validation)
@@ -447,6 +500,11 @@ void xccdf_session_set_user_tailoring_file(struct xccdf_session *session, const 
 	oscap_source_free(session->tailoring.user_file);
 	session->tailoring.user_file = user_tailoring_file != NULL ?
 		oscap_source_new_from_file(user_tailoring_file) : NULL;
+}
+
+struct oscap_source *xccdf_session_get_user_tailoring_file(struct xccdf_session *session)
+{
+	return session->tailoring.user_file;
 }
 
 void xccdf_session_set_user_tailoring_cid(struct xccdf_session *session, const char *user_tailoring_cid)
@@ -626,7 +684,8 @@ static struct ds_sds_session *xccdf_session_get_ds_sds_session(struct xccdf_sess
 	return session->ds.session;
 }
 
-void xccdf_session_set_remote_resources(struct xccdf_session *session, bool allowed, download_progress_calllback_t callback)
+
+void xccdf_session_configure_remote_resources(struct xccdf_session *session, bool allowed, const char *local_files, download_progress_calllback_t callback)
 {
 	if (callback == NULL) {
 		// With empty cb we don't have to check for NULL
@@ -635,13 +694,19 @@ void xccdf_session_set_remote_resources(struct xccdf_session *session, bool allo
 	}
 
 	session->oval.fetch_remote_resources = allowed;
+	session->oval.local_files = local_files;
 	session->oval.progress = callback;
 
 	if (xccdf_session_is_sds(session)) {
 		// We have to propagate this option to allow loading
 		// of external datastream components
-		ds_sds_session_set_remote_resources(xccdf_session_get_ds_sds_session(session), allowed, callback);
+		ds_sds_session_configure_remote_resources(xccdf_session_get_ds_sds_session(session), allowed, local_files, callback);
 	}
+}
+
+void xccdf_session_set_remote_resources(struct xccdf_session *session, bool allowed, download_progress_calllback_t callback)
+{
+	xccdf_session_configure_remote_resources(session, allowed, NULL, callback);
 }
 
 void xccdf_session_set_loading_flags(struct xccdf_session *session, xccdf_session_loading_flags_t flags)
@@ -691,7 +756,9 @@ int xccdf_session_load(struct xccdf_session *session)
 			return ret;
 		}
 	}
-	return xccdf_session_load_tailoring(session);
+	ret = xccdf_session_load_tailoring(session);
+	oscap_source_free_xmlDoc(session->source);
+	return ret;
 }
 
 static int _reporter(const char *file, int line, const char *msg, void *arg)
@@ -883,6 +950,7 @@ int xccdf_session_load_cpe(struct xccdf_session *session)
 	}
 
 	if (xccdf_session_is_sds(session)) {
+		_connect_cpe_session_with_sds(session);
 		struct ds_sds_index *sds_idx = xccdf_session_get_sds_idx(session);
 		if (sds_idx == NULL) {
 			return -1;
@@ -901,7 +969,6 @@ int xccdf_session_load_cpe(struct xccdf_session *session)
 				oscap_string_iterator_free(cpe_it);
 				return 1;
 			}
-			_connect_cpe_session_with_sds(session);
 			while (oscap_string_iterator_has_more(cpe_it)) {
 				const char* cpe_filename = oscap_string_iterator_next(cpe_it);
 
@@ -993,6 +1060,7 @@ static int _xccdf_session_get_oval_from_model(struct xccdf_session *session)
 	while (oscap_file_entry_iterator_has_more(files_it)) {
 		struct oscap_file_entry *file_entry;
 		struct stat sb;
+		bool source_owned = false;
 
 		file_entry = (struct oscap_file_entry *) oscap_file_entry_iterator_next(files_it);
 
@@ -1002,9 +1070,6 @@ static int _xccdf_session_get_oval_from_model(struct xccdf_session *session)
 
 		const char *file_path = oscap_file_entry_get_file(file_entry);
 		struct oscap_source *source = NULL;
-		if (xccdf_session_get_ds_sds_session(session) != NULL) {
-			source = ds_sds_session_get_component_by_href(xccdf_session_get_ds_sds_session(session), file_path);
-		}
 
 		tmp_path = malloc(PATH_MAX * sizeof(char));
 		if (file_path[0] == '/') { // it's a simple absolute path
@@ -1017,16 +1082,20 @@ static int _xccdf_session_get_oval_from_model(struct xccdf_session *session)
 			snprintf(tmp_path, PATH_MAX, "%s/%s", dir_path, file_path);
 		}
 
-		if (source != NULL || stat(tmp_path, &sb) == 0) {
+		if (xccdf_session_get_ds_sds_session(session) != NULL) {
+			source = ds_sds_session_get_component_by_href(xccdf_session_get_ds_sds_session(session), file_path);
+			source_owned = false;
+		} else {
+			if (stat(tmp_path, &sb) == 0) {
+				source = oscap_source_new_from_file(tmp_path);
+				source_owned = true;
+			}
+		}
+
+		if (source != NULL) {
 			resources[idx] = malloc(sizeof(struct oval_content_resource));
 			resources[idx]->href = oscap_strdup(oscap_file_entry_get_file(file_entry));
-			if (source == NULL) {
-				source = oscap_source_new_from_file(tmp_path);
-				resources[idx]->source_owned = true;
-			}
-			else {
-				resources[idx]->source_owned = false;
-			}
+			resources[idx]->source_owned = source_owned;
 			resources[idx]->source = source;
 			idx++;
 			void *new_resources = realloc(resources, (idx + 1) * sizeof(struct oval_content_resource *));
@@ -1308,8 +1377,22 @@ int xccdf_session_evaluate(struct xccdf_session *session)
 		oscap_seterr(OSCAP_EFAMILY_OSCAP, "Cannot build xccdf_policy.");
 		return 1;
 	}
-	policy->rule = session->rule;
+	struct oscap_iterator *it = oscap_iterator_new(session->rules);
+	while (oscap_iterator_has_more(it)) {
+		const char *rule_id = oscap_iterator_next(it);
+		oscap_htable_add(policy->rules, rule_id, (void *)true);
+	}
+	oscap_iterator_free(it);
+	struct oscap_iterator *sit = oscap_iterator_new(session->skip_rules);
+	while (oscap_iterator_has_more(sit)) {
+		const char *rule_id = oscap_iterator_next(sit);
+		oscap_htable_add(policy->skip_rules, rule_id, (void *)true);
+	}
+	oscap_iterator_free(sit);
 
+	if (session->reference_parameter) {
+		xccdf_policy_set_reference_filter(policy, session->reference_parameter);
+	}
 	session->xccdf.result = xccdf_policy_evaluate(policy);
 	if (session->xccdf.result == NULL)
 		return 1;
@@ -1344,7 +1427,8 @@ static size_t _paramlist_size(const char **p) { size_t s = 0; if (!p) return s; 
 
 static size_t _paramlist_cpy(const char **to, const char **p) {
 	size_t s = 0;
-	if (!p) return s;
+	if (!to || !p)
+		return s;
 	for (;p && p[s]; s += 2) to[s] = p[s], to[s+1] = p[s+1];
 	to[s] = p[s];
 	return s;
@@ -1822,6 +1906,11 @@ bool xccdf_session_contains_fail_result(const struct xccdf_session *session)
 	return false;
 }
 
+struct xccdf_rule_result_iterator *xccdf_session_get_rule_results(const struct xccdf_session *session)
+{
+	return xccdf_result_get_rule_results(session->xccdf.result);
+}
+
 int xccdf_session_remediate(struct xccdf_session *session)
 {
 	int res = 0;
@@ -1978,4 +2067,9 @@ int xccdf_session_export_all(struct xccdf_session *session)
 cleanup:
 	oscap_source_free(arf_source);
 	return ret;
+}
+
+void xccdf_session_set_reference_filter(struct xccdf_session *session, const char *reference_filter)
+{
+	session->reference_parameter = reference_filter;
 }

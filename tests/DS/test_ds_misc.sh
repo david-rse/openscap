@@ -10,73 +10,9 @@ set -e -o pipefail
 
 # Test Cases.
 
-sds_add_multiple_twice(){
-	local DIR="${srcdir}/sds_multiple_oval"
-	local XCCDF_FILE="multiple-oval-xccdf.xml"
-	local DS_TARGET_DIR="$(mktemp -d)"
-	local DS_FILE="$DS_TARGET_DIR/sds.xml"
-	local stderr=$(mktemp -t sds_add.out.XXXXXX)
-
-	# Create DS from scratch
-	pushd "$DIR"
-	$OSCAP ds sds-compose "$XCCDF_FILE" "$DS_FILE" 2>&1 > $stderr
-	diff $stderr /dev/null
-	popd
-
-	# Add the very same XCCDF file again with two OVAL files
-	local ADD_DIR="$(mktemp -d)"
-	cp ${DIR}/*.xml ${ADD_DIR}
-	chmod u+w ${ADD_DIR}/* # distcheck shall be able to unlink these files (without --force)
-	local XCCDF2="$ADD_DIR/$XCCDF_FILE"
-	pushd ${ADD_DIR}
-	$OSCAP ds sds-add "$XCCDF2" "$DS_FILE" 2>&1 > $stderr
-	local ifiles=$(ls *.xml)
-	popd
-	diff $stderr /dev/null
-	rm $XCCDF2 ${ADD_DIR}/*-oval.xml
-	rm -f ${ADD_DIR}/oscap_debug.log.*
-	rmdir ${ADD_DIR}
-
-	$OSCAP ds sds-validate "$DS_FILE" 2>&1 > $stderr
-	diff $stderr /dev/null
-	assert_correct_xlinks "$DS_FILE"
-	$OSCAP info "$DS_FILE" 2> $stderr
-	diff $stderr /dev/null
-
-	local result=$DS_FILE
-	assert_exists 1 '/ds:data-stream-collection/ds:data-stream'
-	assert_exists 2 '/ds:data-stream-collection/ds:data-stream/*'
-	assert_exists 1 '/ds:data-stream-collection/ds:data-stream/ds:checklists'
-	assert_exists 2 '/ds:data-stream-collection/ds:data-stream/ds:checklists/*'
-	assert_exists 2 '/ds:data-stream-collection/ds:data-stream/ds:checklists/ds:component-ref'
-	assert_exists 1 '/ds:data-stream-collection/ds:data-stream/ds:checks'
-	assert_exists 4 '/ds:data-stream-collection/ds:data-stream/ds:checks/*'
-	assert_exists 4 '/ds:data-stream-collection/ds:data-stream/ds:checks/ds:component-ref'
-	assert_exists 6 '/ds:data-stream-collection/ds:component'
-	assert_exists 4 '/ds:data-stream-collection/ds:component/oval_definitions'
-	assert_exists 2 '/ds:data-stream-collection/ds:component/xccdf:Benchmark'
-
-	# split the SDS and verify the content
-	pushd "$DS_TARGET_DIR"
-	$OSCAP ds sds-split "`basename $DS_FILE`" "$DS_TARGET_DIR"
-	[ ! -f multiple-oval-xccdf.xml ]
-	mv scap_org.open-scap_cref_multiple-oval-xccdf.xml multiple-oval-xccdf.xml
-	popd
-	local f
-	for f in second-oval.xml first-oval.xml multiple-oval-xccdf.xml; do
-		$OSCAP info ${DS_TARGET_DIR}/$f 2> $stderr
-		diff $stderr /dev/null
-		diff ${DS_TARGET_DIR}/$f ${DIR}/$f
-		rm ${DS_TARGET_DIR}/$f
-	done
-	rm $DS_FILE
-	rm -f $DS_TARGET_DIR/oscap_debug.log.*
-	rmdir $DS_TARGET_DIR
-	rm $stderr
-}
-
 function test_eval {
     probecheck "rpminfo" || return 255
+    [ -e "/var/lib/rpm" ] || return 255
     local stderr=$(mktemp -t ${name}.out.XXXXXX)
     $OSCAP xccdf eval "${srcdir}/$1" 2> $stderr
     diff /dev/null $stderr; rm $stderr
@@ -250,15 +186,20 @@ function test_ds_continue_without_remote_resources() {
 	rm -f "$result" "$oval_result"
 }
 
-function test_source_date_epoch() {
-	local xccdf="$srcdir/sds_multiple_oval/multiple-oval-xccdf.xml"
-	local result="$(mktemp)"
-	local timestamp="2020-03-05T12:09:37"
-	export SOURCE_DATE_EPOCH="1583410177"
-	export TZ=UTC
-	$OSCAP ds sds-compose "$xccdf" "$result"
-	assert_exists 3 '//ds:component[@timestamp="'$timestamp'"]'
-	rm -f "$result"
+function test_ds_error_remote_resources() {
+	# --fetch-remote-resources uses internet
+	require_internet || return 255
+
+	local DS="${srcdir}/$1"
+	local PROFILE="$2"
+	local result=$(mktemp)
+	local stderr=$(mktemp)
+
+	$OSCAP xccdf eval --fetch-remote-resources --profile "$PROFILE" --results "$result" "$DS" 2>"$stderr" || ret=$?
+	grep -q "Downloading: https://www.example.com/security/data/oval/oval.xml.bz2 ... error" "$stderr"
+	grep -q "OpenSCAP Error: Download failed" "$stderr"
+
+	rm -f "$result" "$stderr"
 }
 
 
@@ -284,10 +225,10 @@ test_run "eval_oval_id2" test_oval_eval_id eval_oval_id/sds.xml scap_org.open-sc
 test_run "eval_cpe" test_eval_cpe eval_cpe/sds.xml
 
 test_run "test_eval_complex" test_eval_complex
-test_run "sds_add_multiple_oval_twice_in_row" sds_add_multiple_twice
 test_run "test_ds_1_2_continue_without_remote_resources" test_ds_continue_without_remote_resources ds_continue_without_remote_resources/remote_content_1.2.ds.xml xccdf_com.example.www_profile_test_remote_res
+test_run "test_ds_1_2_error_remote_resources" test_ds_error_remote_resources ds_continue_without_remote_resources/remote_content_1.2.ds.xml xccdf_com.example.www_profile_test_remote_res
 test_run "test_ds_1_3_continue_without_remote_resources" test_ds_continue_without_remote_resources ds_continue_without_remote_resources/remote_content_1.3.ds.xml xccdf_com.example.www_profile_test_remote_res
-test_run "test_source_date_epoch" test_source_date_epoch
+test_run "test_ds_1_3_error_remote_resources" test_ds_error_remote_resources ds_continue_without_remote_resources/remote_content_1.3.ds.xml xccdf_com.example.www_profile_test_remote_res
 
 test_exit
 

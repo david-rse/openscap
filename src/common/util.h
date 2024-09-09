@@ -32,8 +32,8 @@
 #include "public/oscap.h"
 #include <stdarg.h>
 #include <string.h>
-#include <pcre.h>
 #include "oscap_export.h"
+#include "oscap_pcre.h"
 
 #ifndef __attribute__nonnull__
 #define __attribute__nonnull__(x) assert((x) != NULL)
@@ -313,6 +313,24 @@ static inline char *oscap_strdup(const char *str) {
 #endif
 }
 
+/**
+ * Removes all occurrences of substr from str by shifting the contents to
+ * the left. If string is NULL, does nothing.
+ * @param str String we want to process
+ * @param substr Sub-string we want to get rid of
+ */
+static inline void oscap_strrm(char *str, const char *substr) {
+	if (str == NULL)
+		return;
+
+	size_t sublen = strlen(substr);
+	char *ptr = strstr(str, substr);
+	while (ptr != NULL) {
+		memmove(ptr, ptr+sublen, strlen(ptr) - sublen + 1);
+		ptr = strstr(str, substr);
+	}
+}
+
 /// Just like strcmp except it's NULL-safe. Use the standard strcmp directly if possible.
 static inline int oscap_strcmp(const char *s1, const char *s2) {
 	if (s1 == NULL) s1 = "";
@@ -345,8 +363,10 @@ static inline void *oscap_aligned_malloc(size_t size, size_t alignment) {
 	return _aligned_malloc(size, alignment);
 #else
 	void *ptr = NULL;
-	posix_memalign(&ptr, alignment, size);
-	return ptr;
+	int ret = posix_memalign(&ptr, alignment, size);
+	if (ret == 0)
+		return ptr;
+	return NULL;
 #endif
 }
 
@@ -363,6 +383,18 @@ static inline void oscap_aligned_free(void *memblock) {
 char *oscap_trim(char *str);
 /// Print to a newly allocated string using a va_list.
 char *oscap_vsprintf(const char *fmt, va_list ap);
+
+/**
+ * Generates a pseudorandom string of a given length.
+ * If charset string is not NULL and its length is greater than 0,
+ * it will be used as a dictionary, otherwise a default alphanumeric set
+ * will be the base for the generated string.
+ * Caller is responsible for freeing the returned string.
+ * @param len desired string length (must be greater than 0)
+ * @param charset a dictionary string, could be NULL
+ * @return A random string of desired length.
+ */
+char *oscap_generate_random_string(size_t len, char *charset);
 
 /**
  * Join 2 paths in an intelligent way.
@@ -469,20 +501,6 @@ int oscap_strncasecmp(const char *s1, const char *s2, size_t n);
  */
 char *oscap_strerror_r(int errnum, char *buf, size_t buflen);
 
-/**
- * Match a regular expression and return substrings.
- * Caller is responsible for freeing the returned array.
- * @param str subject string
- * @param ofs starting offset in str
- * @param re compiled regular expression
- * @param want_substrs if non-zero, substrings will be returned
- * @param substrings contains returned substrings
- * @return count of matched substrings, 0 if no match
- * negative value on failure
- */
-int oscap_get_substrings(char *str, int *ofs, pcre *re, int want_substrs, char ***substrings);
-
-
 #ifndef OS_WINDOWS
 /**
  * Open file for reading with prefix added to its name.
@@ -524,4 +542,33 @@ wchar_t *oscap_windows_str_to_wstr(const char *str);
 char *oscap_windows_error_message(unsigned long error_code);
 #endif
 
-#endif				/* OSCAP_UTIL_H_ */
+/**
+ * Open a file for writing.
+ * The main difference from fopen() is that if the file exists but its opening
+ * for writing fails as permission denied, it will attempt to open it again
+ * without the O_CREAT flag. This is useful when writing to world-writeable
+ * directories with sticky bit such as /tmp on systems with fs.protected_regular
+ * turned on.
+ * @param filename name of the file to be opened
+ * @return file descriptor or -1 on error
+ */
+int oscap_open_writable(const char *filename);
+
+/**
+ * Check if a path starts with the given prefix
+ * @param path file system path
+ * @param prefix file system path that will be tested if it's a prefix of the path parameter
+ * @return true or false
+ */
+bool oscap_path_startswith(const char *path, const char *prefix);
+
+/**
+ * Concatenate 2 strings
+ * Convenience wrapper over strncat.
+ * @param str1 string 1
+ * @param str2 string 2
+ * @return string 1 with string 2 appended inside
+ */
+char *oscap_concat(char *str1, char *str2);
+
+#endif              /* OSCAP_UTIL_H_ */

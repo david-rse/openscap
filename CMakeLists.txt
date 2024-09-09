@@ -10,8 +10,8 @@ endif()
 
 project("openscap")
 set(OPENSCAP_VERSION_MAJOR "1")
-set(OPENSCAP_VERSION_MINOR "3")
-set(OPENSCAP_VERSION_PATCH "5")
+set(OPENSCAP_VERSION_MINOR "4")
+set(OPENSCAP_VERSION_PATCH "1")
 
 if(OPENSCAP_VERSION_SUFFIX)
 	set(OPENSCAP_VERSION "${OPENSCAP_VERSION_MAJOR}.${OPENSCAP_VERSION_MINOR}.${OPENSCAP_VERSION_PATCH}_${OPENSCAP_VERSION_SUFFIX}")
@@ -23,7 +23,7 @@ endif()
 # See http://sources.redhat.com/autobook/autobook/autobook_91.html#SEC91 for details
 
 ## increment if the interface has additions, changes, removals.
-set(LT_CURRENT 29)
+set(LT_CURRENT 33)
 
 ## increment any time the source changes; set 0 to if you increment CURRENT
 set(LT_REVISION 0)
@@ -31,7 +31,7 @@ set(LT_REVISION 0)
 ## increment if any interfaces have been added; set to 0
 ## if any interfaces have been changed or removed. removal has
 ## precedence over adding, so set to 0 if both happened.
-set(LT_AGE 4)
+set(LT_AGE 0)
 
 math(EXPR LT_CURRENT_MINUS_AGE "${LT_CURRENT} - ${LT_AGE}")
 
@@ -78,6 +78,7 @@ include(CheckIncludeFile)
 include(CheckIncludeFiles)
 include(CheckCSourceCompiles)
 include(CMakeDependentOption)
+include(FindPythonModule)
 
 # ---------- DEPENDENCIES
 
@@ -87,8 +88,6 @@ if(ACL_FOUND)
 	check_include_file(acl/libacl.h HAVE_ACL_LIBACL_H)
 	check_include_file(sys/acl.h HAVE_SYS_ACL_H)
 endif()
-
-find_package(AptPkg)
 
 find_package(Blkid)
 if(BLKID_FOUND)
@@ -106,9 +105,11 @@ find_package(Doxygen)
 find_package(GConf)
 find_package(Ldap)
 find_package(OpenDbx)
-find_package(PCRE REQUIRED)
+find_package(PCRE2 REQUIRED)
+
 find_package(PerlLibs)
 find_package(Popt)
+find_package(Systemd)
 
 find_package(Procps)
 if(PROCPS_FOUND)
@@ -124,8 +125,10 @@ endif()
 find_package(PythonInterp 3)
 find_package(PythonLibs 3)
 
-set(PREFERRED_PYTHON_PATH "${PYTHON_EXECUTABLE}")
-set(PYTHON3_PATH "${PYTHON_EXECUTABLE}")
+set(PREFERRED_PYTHON_PATH "${PYTHON_EXECUTABLE}" CACHE PATH "Path to preferred Python")
+set(PYTHON3_PATH "${PYTHON_EXECUTABLE}" CACHE PATH "Path to Python3")
+
+find_python_module(pytest)
 
 find_package(RPM)
 if(RPM_FOUND)
@@ -171,13 +174,13 @@ check_library_exists(pthread pthread_setname_np "" HAVE_PTHREAD_SETNAME_NP)
 check_library_exists(pthread pthread_getname_np "" HAVE_PTHREAD_GETNAME_NP)
 
 # WITH_CRYPTO
-set(WITH_CRYPTO "gcrypt" CACHE STRING "gcrypt|nss3")
-if(NOT (${WITH_CRYPTO} EQUAL "nss3"))
-	# gcrypt
-	find_package(GCrypt)
-else()
-	# nss3
+set(WITH_CRYPTO "gcrypt" CACHE STRING "gcrypt|nss")
+if(${WITH_CRYPTO} STREQUAL "nss")
+	message("-- Using NSS")
 	find_package(NSS)
+else()
+	message("-- Using GCrypt")
+	find_package(GCrypt)
 endif()
 if(GCRYPT_FOUND OR NSS_FOUND)
 	set(CRYPTO_FOUND TRUE)
@@ -191,6 +194,8 @@ else()
 	message(STATUS "yaml-filter was not found")
 	set(YAML_FILTER_FOUND FALSE)
 endif()
+
+message("-- Using PCRE2")
 
 check_library_exists(rt clock_gettime "" HAVE_CLOCK_GETTIME)
 check_function_exists(posix_memalign HAVE_POSIX_MEMALIGN)
@@ -251,11 +256,14 @@ if (WIN32)
 endif()
 cmake_dependent_option(ENABLE_PROBES_WINDOWS "build OVAL probes for the Windows OVAL tests" ${IS_WIN32} "ENABLE_PROBES" OFF)
 
+option(OPENSCAP_ENABLE_SHA1 "Enable using the SHA-1 algorithm" OFF)
+option(OPENSCAP_ENABLE_MD5 "Enable using the MD5 algorithm" OFF)
+
 # INDEPENDENT PROBES
-cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_ENVIRONMENTVARIABLE "Independent environmentvariable probe" ON "ENABLE_PROBES_INDEPENDENT; NOT WIN32" OFF)
+cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_ENVIRONMENTVARIABLE "Independent environmentvariable probe" ON "ENABLE_PROBES_INDEPENDENT" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_ENVIRONMENTVARIABLE58 "Independent environmentvariable58 probe" ON "ENABLE_PROBES_INDEPENDENT; NOT WIN32" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_FAMILY "Independent family probe" ON "ENABLE_PROBES_INDEPENDENT" OFF)
-cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_FILEHASH "Independent filehash probe" ON "ENABLE_PROBES_INDEPENDENT; CRYPTO_FOUND; NOT WIN32" OFF)
+cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_FILEHASH "Independent filehash probe" ON "ENABLE_PROBES_INDEPENDENT; CRYPTO_FOUND; OPENSCAP_ENABLE_SHA1; OPENSCAP_ENABLE_MD5; NOT WIN32" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_FILEHASH58 "Independent filehash58 probe" ON "ENABLE_PROBES_INDEPENDENT; CRYPTO_FOUND; NOT WIN32" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_SQL "Independent sql probe" ON "ENABLE_PROBES_INDEPENDENT; OPENDBX_FOUND; NOT WIN32" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_SQL57 "Independent sql57 probe" ON "ENABLE_PROBES_INDEPENDENT; OPENDBX_FOUND; NOT WIN32" OFF)
@@ -270,7 +278,7 @@ cmake_dependent_option(OPENSCAP_PROBE_INDEPENDENT_YAMLFILECONTENT "Independent y
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_DNSCACHE "Unix dnscache probe" ON "ENABLE_PROBES_UNIX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_FILE "Unix file probe" ON "ENABLE_PROBES_UNIX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_FILEEXTENDEDATTRIBUTE "Unix fileextendedattribute probe" ON "ENABLE_PROBES_UNIX; HAVE_SYS_XATTR_H OR HAVE_ATTR_XATTR_H OR HAVE_SYS_EXTATTR_H" OFF)
-cmake_dependent_option(OPENSCAP_PROBE_UNIX_GCONF "Unix gconf probe" ON "ENABLE_PROBES_UNIX; GCONF_FOUND" OFF)
+cmake_dependent_option(OPENSCAP_PROBE_UNIX_GCONF "Unix gconf probe" OFF "ENABLE_PROBES_UNIX; GCONF_FOUND" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_INTERFACE "Unix interface probe" ON "ENABLE_PROBES_UNIX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_PASSWORD "Unix password probe" ON "ENABLE_PROBES_UNIX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_PROCESS "Unix process probe" ON "ENABLE_PROBES_UNIX" OFF)
@@ -284,7 +292,7 @@ cmake_dependent_option(OPENSCAP_PROBE_UNIX_UNAME "Unix uname probe" ON "ENABLE_P
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_XINETD "Unix xinetd probe" ON "ENABLE_PROBES_UNIX" OFF)
 
 # LINUX PROBES
-cmake_dependent_option(OPENSCAP_PROBE_LINUX_DPKGINFO "Linux dpkginfo probe" ON "ENABLE_PROBES_LINUX; APTPKG_FOUND" OFF)
+cmake_dependent_option(OPENSCAP_PROBE_LINUX_DPKGINFO "Linux dpkginfo probe" ON "ENABLE_PROBES_LINUX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_IFLISTENERS "Linux iflisteners probe" ON "ENABLE_PROBES_LINUX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_INETLISTENINGSERVERS "Linux inetlisteningservers probe" ON "ENABLE_PROBES_LINUX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_PARTITION "Linux partition probe" ON "ENABLE_PROBES_LINUX; BLKID_FOUND" OFF)
@@ -296,6 +304,7 @@ cmake_dependent_option(OPENSCAP_PROBE_LINUX_SELINUXBOOLEAN "Linux selinuxboolean
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_SELINUXSECURITYCONTEXT "Linux selinuxsecuritycontext probe" ON "ENABLE_PROBES_LINUX; SELINUX_FOUND" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_SYSTEMDUNITDEPENDENCY "Linux systemdunitdependency probe" ON "ENABLE_PROBES_LINUX; DBUS_FOUND" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_SYSTEMDUNITPROPERTY "Linux systemdunitproperty probe" ON "ENABLE_PROBES_LINUX; DBUS_FOUND" OFF)
+cmake_dependent_option(OPENSCAP_PROBE_LINUX_FWUPDSECURITYATTR "Linux fwupd probe" ON "ENABLE_PROBES_LINUX; DBUS_FOUND" OFF)
 
 # SOLARIS PROBES
 cmake_dependent_option(OPENSCAP_PROBE_SOLARIS_ISAINFO "Solaris isainfo probe" ON "ENABLE_PROBES_SOLARIS" OFF)
@@ -323,6 +332,7 @@ cmake_dependent_option(ENABLE_OSCAP_UTIL_VM "enables the oscap-vm utility, this 
 cmake_dependent_option(ENABLE_OSCAP_UTIL_PODMAN "enables the oscap-podman utility, this lets you scan Podman containers and container images" ON "NOT WIN32" OFF)
 cmake_dependent_option(ENABLE_OSCAP_UTIL_CHROOT "enables the oscap-chroot utility, this lets you scan entire chroots using offline scanning" ON "NOT WIN32" OFF)
 option(ENABLE_OSCAP_UTIL_AUTOTAILOR "enables the autotailor utility that is able to perform command-line tailoring" TRUE)
+option(ENABLE_OSCAP_REMEDIATE_SERVICE "enables the oscap-remediate service" FALSE)
 
 # ---------- TEST-SUITE SWITCHES
 
@@ -341,7 +351,7 @@ option(ENABLE_MITRE "enables MITRE tests -- requires specific environment suppor
 
 # ---------- LANGUAGE BINDINGS
 cmake_dependent_option(ENABLE_PYTHON3 "if enabled, the python3 swig bindings will be built" ON "PYTHONINTERP_FOUND;SWIG_FOUND;PYTHONLIBS_FOUND" OFF)
-cmake_dependent_option(ENABLE_PERL "if enabled, the perl swig bindings will be built" ON "PERLLIBS_FOUND;SWIG_FOUND" OFF)
+cmake_dependent_option(ENABLE_PERL "if enabled, the perl swig bindings will be built" ON "PERLLIBS_FOUND;SWIG_FOUND;NOT WIN32" OFF)
 
 # ---------- NO IDEA WHAT THIS IS FOR
 set(WANT_BASE64 TRUE CACHE BOOL "wants builtin Base64")
@@ -371,16 +381,18 @@ message(STATUS " ")
 message(STATUS "OVAL:")
 message(STATUS "base probe support: ${ENABLE_PROBES}")
 message(STATUS "SEAP msgid bit-size: ${SEAP_MSGID_BITS}")
+message(STATUS "SHA-1: ${OPENSCAP_ENABLE_SHA1}")
+message(STATUS "MD5: ${OPENSCAP_ENABLE_MD5}")
 
 message(STATUS "")
 message(STATUS "Independent probes: ${ENABLE_PROBES_INDEPENDENT}")
+message(STATUS "  Independent environmentvariable probe: ${OPENSCAP_PROBE_INDEPENDENT_ENVIRONMENTVARIABLE}")
 message(STATUS "  Independent family probe: ${OPENSCAP_PROBE_INDEPENDENT_FAMILY}")
 message(STATUS "  Independent system info probe: ${OPENSCAP_PROBE_INDEPENDENT_SYSTEM_INFO}")
 message(STATUS "  Independent variable probe: ${OPENSCAP_PROBE_INDEPENDENT_VARIABLE}")
 
 message(STATUS "")
 message(STATUS "Independent probes incompatible with WIN32 (WIN32 status: ${IS_WIN32})")
-message(STATUS "  Independent environmentvariable probe: ${OPENSCAP_PROBE_INDEPENDENT_ENVIRONMENTVARIABLE}")
 message(STATUS "  Independent environmentvariable58 probe: ${OPENSCAP_PROBE_INDEPENDENT_ENVIRONMENTVARIABLE58}")
 message(STATUS "  Independent filehash probe: ${OPENSCAP_PROBE_INDEPENDENT_FILEHASH}")
 message(STATUS "  Independent filehash58 probe: ${OPENSCAP_PROBE_INDEPENDENT_FILEHASH58}")
@@ -412,7 +424,7 @@ message(STATUS "  Unix xinetd probe: ${OPENSCAP_PROBE_UNIX_XINETD}")
 message(STATUS " ")
 
 message(STATUS "Linux probes: ${ENABLE_PROBES_LINUX}")
-message(STATUS "  Linux dpkginfo probe (depends on aptpkg): ${OPENSCAP_PROBE_LINUX_DPKGINFO}")
+message(STATUS "  Linux dpkginfo probe: ${OPENSCAP_PROBE_LINUX_DPKGINFO}")
 message(STATUS "  Linux iflisteners probe: ${OPENSCAP_PROBE_LINUX_IFLISTENERS}")
 message(STATUS "  Linux inetlisteningservers probe: ${OPENSCAP_PROBE_LINUX_INETLISTENINGSERVERS}")
 message(STATUS "  Linux partition probe (depends on blkid): ${OPENSCAP_PROBE_LINUX_PARTITION}")
@@ -424,6 +436,7 @@ message(STATUS "  Linux selinuxboolean probe (depends on selinux): ${OPENSCAP_PR
 message(STATUS "  Linux selinuxsecuritycontext probe (depends on selinux): ${OPENSCAP_PROBE_LINUX_SELINUXSECURITYCONTEXT}")
 message(STATUS "  Linux systemdunitdependency probe (depends on dbus): ${OPENSCAP_PROBE_LINUX_SYSTEMDUNITDEPENDENCY}")
 message(STATUS "  Linux systemdunitproperty probe (depends on dbus): ${OPENSCAP_PROBE_LINUX_SYSTEMDUNITPROPERTY}")
+message(STATUS "  Linux fwupdsecurityattr probe (depends on dbus): ${OPENSCAP_PROBE_LINUX_FWUPDSECURITYATTR}")
 message(STATUS " ")
 
 message(STATUS "Solaris probes: ${ENABLE_PROBES_SOLARIS}")
@@ -441,6 +454,10 @@ message(STATUS " ")
 message(STATUS "Language bindings:")
 message(STATUS "python3 bindings: ${ENABLE_PYTHON3}")
 message(STATUS "perl bindings: ${ENABLE_PERL}")
+message(STATUS "perl vendorlib: ${PERL_VENDORLIB}")
+message(STATUS "perl vendorarch: ${PERL_VENDORARCH}")
+message(STATUS "perl privlib: ${PERL_PRIVLIB}")
+message(STATUS "perl archlib: ${PERL_ARCHLIB}")
 message(STATUS " ")
 
 message(STATUS "Utilities:")
@@ -458,11 +475,13 @@ message(STATUS "Testing:")
 message(STATUS "tests: ${ENABLE_TESTS}")
 message(STATUS "valgrind: ${ENABLE_VALGRIND}")
 message(STATUS "MITRE: ${ENABLE_MITRE}")
+message(STATUS "pytest: ${PY_PYTEST}")
 message(STATUS " ")
 
 message(STATUS "Documentation:")
 message(STATUS "enabled: ${ENABLE_DOCS}")
 message(STATUS "doxygen: ${DOXYGEN_EXECUTABLE}")
+message(STATUS "dot (graphviz): ${DOXYGEN_DOT_EXECUTABLE}")
 message(STATUS "asciidoc: ${ASCIIDOC_EXECUTABLE}")
 
 # ---------- PATHS
@@ -482,25 +501,7 @@ else()
 endif()
 set(OSCAP_TEMP_DIR "/tmp" CACHE STRING "use different temporary directory to execute sce scripts (default=/tmp)")
 
-# ---------- RPATHS for linking
 
-# see https://cmake.org/Wiki/CMake_RPATH_handling
-
-# use, i.e. don't skip the full RPATH for the build tree
-set(CMAKE_SKIP_BUILD_RPATH FALSE)
-
-# when building, don't use the install RPATH already
-# (but later on when installing)
-set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
-
-set(CMAKE_INSTALL_RPATH ${CMAKE_INSTALL_FULL_LIBDIR})
-
-# add the automatically determined parts of the RPATH
-# which point to directories outside the build tree to the install RPATH
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-
-# Turn on RPATH for OSX for policy warning
-set(CMAKE_MACOSX_RPATH ON)
 # ---------- CONFIGURATION
 
 configure_file("config.h.in" "config.h")
@@ -524,7 +525,8 @@ if (MSVC)
 endif()
 
 if (${CMAKE_C_COMPILER_ID} STREQUAL "GNU" OR ${CMAKE_C_COMPILER_ID} STREQUAL "Clang")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -W -Wall -Wnonnull -Wshadow -Wformat -Wundef -Wno-unused-parameter -Wmissing-prototypes -Wno-unknown-pragmas -D_GNU_SOURCE -std=c99")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -W -Wall -Wnonnull -Wshadow -Wformat -Wundef -Wno-unused-parameter -Wmissing-prototypes -Wno-unknown-pragmas -Wno-int-conversion -Werror=implicit-function-declaration -D_GNU_SOURCE -std=c99")
+	add_link_options(-Wl,-z,now)
 endif()
 if(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
 	add_link_options(-lkvm -lm -lprocstat)
@@ -551,9 +553,6 @@ include_directories(
 	"src/common/"
 	"src/common/public/"
 	"src/CPE/public/"
-	"src/CVE/public/"
-	"src/CVRF/public/"
-	"src/CVSS/public/"
 	"src/DS/public/"
 	"src/OVAL/public/"
 	"src/OVAL/probes/public/"
@@ -570,7 +569,7 @@ include_directories(
 	${LIBXML2_INCLUDE_DIR}
 	${XMLSEC_INCLUDE_DIRS}
 	${OPENSSL_INCLUDE_DIR}
-	${PCRE_INCLUDE_DIRS}
+	${PCRE2_INCLUDE_DIRS}
 )
 
 # Honor visibility properties for all target types
@@ -620,6 +619,16 @@ if(NOT WIN32)
 		${CMAKE_CURRENT_BINARY_DIR}/libopenscap.pc
 		DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 	)
+	if(WITH_SYSTEMD)
+		if(ENABLE_OSCAP_REMEDIATE_SERVICE)
+			# systemd service for offline (boot-time) remediation
+			configure_file("oscap-remediate.service.in" "oscap-remediate.service" @ONLY)
+			install(FILES
+				${CMAKE_CURRENT_BINARY_DIR}/oscap-remediate.service
+				DESTINATION ${CMAKE_INSTALL_PREFIX}/${SYSTEMD_UNITDIR}
+			)
+		endif()
+	endif()
 endif()
 
 # changelog

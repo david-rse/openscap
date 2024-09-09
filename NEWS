@@ -1,3 +1,100 @@
+openscap-1.4.0                                                  2024-08-13
+- New features
+  - Introduce ability to generate Kickstarts for unattended OS installation using the `oscap xccdf generate fix --fix-type kickstart` command
+  - Add ability to process multi-profile JSON tailorings by the `autotailor` tool
+- Removed features
+  - Removed `cve`, `cvss`, `cvrf` modules
+  - Removed `ds` submodules `sds-compose`, `sds-add`, `sds-split`, `rds-create`, `rds-split`
+  - Removed `--template`, `--oval-template` and `--sce-template` options from the `xccdf generate` submodule
+  - Remove the `--skip-valid` option (replaced by `--skip-validation`)
+- Maintenance, bug fix
+  - Advertise path to SSG in remediation scripts
+  - Remove the option to build with PCRE
+  - Process CPE AL platforms if CPE dictionary isn't part of data stream
+  - Disable GConf probe by default (and remove dependencies from docs)
+  - Disable MD5 and SHA-1 by default
+  - Remove CPE dictionary
+  - Fix compiler warnings
+  - Update User Manual
+
+openscap-1.3.10                                                 18-03-2024
+- New features
+  - Dump all env. variables that affects the behaviour on INFO log level
+  - Support Blueprint services customization for masking
+  - Fix Blueprint template to be self-contained
+  - Add a refine-rule tailoring ability to autotailor
+  - Introduce JSON tailoring import option for autotailor
+  - Select rules based on reference
+  - Skip certain paths from scanning (controlled via env. variable)
+  - Introduce a limit of collected items (controlled via env. variable)
+- Maintenance, bug fix
+  - Fix partition probe for PCRE2
+  - Fix NSS crypto backend
+  - Wrap Bash snippets in a subshell when generating a fix script
+  - Improve references in HTML guides and reports
+  - Update html report with OVAL details
+  - Rewrite dpkginfo probe without using APT
+  - Fix incorrect openscap-cpe-oval result filename
+  - Implement xccdf_session_get_rule_results function in XCCDF session API
+  - Implement xccdf_session_result_reset function in XCCDF session API
+
+openscap-1.3.9                                                  06-09-2023
+- New features
+  - OpenSCAP can now use PCRE2 library
+- Maintenance, bug fix
+  - Fix offline mode (OVAL/sysctl)
+  - Fix leak of dpkg cache when dpkginfo_init is called multiple times
+  - Fix un-expanded variable in xccdf report output
+  - Fix issues when parsing profiles
+  - Fix minor problems and resource leaks
+
+openscap-1.3.8                                                  21-06-2023
+- New features
+  - The boot-time remediation service for systemd's Offline Update mode is now disabled by default
+  - Add offline capabilities to the shadow OVAL probe
+  - Add offline capabilities to the sysctl OVAL probe
+  - Add 'auristorfs' to list of network fileystems
+  - Add new experimental linux-bound fwupdsecattr probe for system firmware security attributes (fwupd-based)
+- Maintenance, bug fix
+  - Use ListUnitFiles D-Bus method to fetch all units in systemd OVAL probe
+  - Fix minor resource leaks
+
+openscap-1.3.7                                                  26-01-2023
+- Maintenance, bug fix
+  - Fix error when processing OVAL filters (rhbz#2126882, rhbz#2126883)
+  - Don't emit xmlfilecontent items if XPath doesn't match (rhbz#2138884, rhbz#2139060)
+  - Prevent "Failed to check available memory" errors (rhbz#2109485, rhbz#2111040)
+  - Make epoch comparison less strict for dpkg
+  - Generate graphs when creating Doxygen documentation
+  - Fix build on Fedora 37 and Rawhide
+  - Fix some compiler warnings
+  - Infrastructure and test suite fixes
+  - Use more conscious language
+  - Fix typos and update documentation
+
+openscap-1.3.6                                                  19-01-2022
+  - New features
+    - Select and exclude groups of rules on the command line
+    - The boot-time remediation service for systemd's Offline Update mode
+    - Memory limit control using OSCAP_PROBE_MEMORY_USAGE_RATIO environment variable
+    - Allow disablement of SHA-1 and MD5
+    - Allow providing pre-downloaded components
+    - Introduce OSBuild Blueprint fix type
+  - Maintenance, bug fix
+    - Fix coverity issues
+    - Patch the `segfault` in dpkginfo_fini()
+    - Add an alternative source of hostname
+    - Fail download on HTTP errors
+    - Compile "environmentvariable_probe" on Windows
+    - FreeBSD build and test fixes
+    - Add offline mode for password probe
+    - Initialize crypto API only once
+    - Fix UBI 9 scan
+    - oval/yamlfilecontent: Add 'null' values handling
+    - Do not set Rpath
+    - Do not split `XCCDF:requires` with multiple `idrefs`
+    - Allow empty /proc in offline mode
+
 openscap-1.3.5                                                  23-04-2021
   - New features
     - Made schematron-based validation enabled by default for validate command of oval and xccdf modules

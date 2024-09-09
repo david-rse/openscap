@@ -105,6 +105,10 @@ static int filehash_cb (const char *prefix, const char *p, const char *f, probe_
         pbuf[plen+flen] = '\0';
 	include_filepath = oval_schema_version_cmp(over, OVAL_SCHEMA_VERSION(5.6)) >= 0;
 
+	if (probe_path_is_blocked(pbuf, ctx->blocked_paths)) {
+		return 0;
+	}
+
         /*
          * Open the file
          */
@@ -117,8 +121,9 @@ static int filehash_cb (const char *prefix, const char *p, const char *f, probe_
 	}
 
         if (fd < 0) {
-                strerror_r (errno, pbuf, PATH_MAX);
-                pbuf[PATH_MAX] = '\0';
+		#define __ERRBUF_SIZE 128
+		char errbuf[__ERRBUF_SIZE] = {0};
+		oscap_strerror_r(errno, errbuf, sizeof errbuf - 1);
 
 		itm = probe_item_create(OVAL_INDEPENDENT_FILE_HASH, NULL,
 				"filepath", OVAL_DATATYPE_STRING, include_filepath ? pbuf : NULL,
@@ -127,7 +132,7 @@ static int filehash_cb (const char *prefix, const char *p, const char *f, probe_
 				NULL
 				);
 		probe_item_add_msg(itm, OVAL_MESSAGE_LEVEL_ERROR,
-				"Can't open \"%s\": errno=%d, %s.", pbuf, errno, strerror (errno));
+				"Can't open \"%s\": %s (errno=%d).", pbuf, errbuf, errno);
 		probe_item_setstatus(itm, SYSCHAR_STATUS_ERROR);
 
        } else {
@@ -190,12 +195,6 @@ int filehash_probe_offline_mode_supported()
 
 void *filehash_probe_init(void)
 {
-        /*
-         * Initialize crypto API
-         */
-        if (crapi_init (NULL) != 0)
-                return (NULL);
-
         /*
          * Initialize mutex.
          */

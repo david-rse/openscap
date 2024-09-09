@@ -40,7 +40,6 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
-#include <cvss_score.h>
 #include <oscap_debug.h>
 #include "oscap_helpers.h"
 
@@ -60,20 +59,24 @@ static void oscap_action_init(struct oscap_action *action)
     action->validate = 1;
     action->schematron = 1;
     action->validate_signature = 1;
+    action->rules = oscap_stringlist_new();
+    action->skip_rules = oscap_stringlist_new();
 }
 
 static void oscap_action_release(struct oscap_action *action)
 {
 	assert(action != NULL);
 	free(action->f_ovals);
-	cvss_impact_free(action->cvss_impact);
+    oscap_stringlist_free(action->rules);
+    oscap_stringlist_free(action->skip_rules);
 }
 
 static size_t paramlist_size(const char **p) { size_t s = 0; if (!p) return s; while (p[s]) s += 2; return s; }
 
 static size_t paramlist_cpy(const char **to, const char **p) {
     size_t s = 0;
-    if (!p) return s;
+    if (!to || !p)
+        return s;
     for (;p && p[s]; s += 2) to[s] = p[s], to[s+1] = p[s+1];
     to[s] = p[s];
     return s;
@@ -188,7 +191,7 @@ static const char *common_opts_help =
 	"Common options:\n"
 	"   --verbose <verbosity_level>   - Turn on verbose mode at specified verbosity level.\n"
 	"                                   Verbosity level must be one of: DEVEL, INFO, WARNING, ERROR.\n"
-	"   --verbose-log-file <file>     - Write verbose informations into file.\n";
+	"   --verbose-log-file <file>     - Write verbose information into file.\n";
 
 static void oscap_module_print_help(struct oscap_module *module, FILE *out)
 {
@@ -381,6 +384,7 @@ int oscap_module_process(struct oscap_module *module, int argc, char **argv)
 			if (!oscap_set_verbose(action.verbosity_level, action.f_verbose_log)) {
 				goto cleanup;
 			}
+            oscap_print_env_vars();
             ret = oscap_module_call(&action);
             goto cleanup;
         }

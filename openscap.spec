@@ -1,8 +1,8 @@
 # This spec file is not synchronized to the Fedora downstream.
 # It serves as Fedora CI configuration and as support for downstream updates.
 Name:           openscap
-Version:        1.3.4
 Release:        0%{?dist}
+Version:        1.3.0
 Epoch:          1
 Summary:        Set of open source libraries enabling integration of the SCAP line of standards
 License:        LGPLv2+
@@ -14,8 +14,8 @@ BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  swig libxml2-devel libxslt-devel perl-generators perl-XML-Parser
 BuildRequires:  rpm-devel
-BuildRequires:  libgcrypt-devel
-BuildRequires:  pcre-devel
+BuildRequires:  nss-devel
+BuildRequires:  pcre2-devel
 BuildRequires:  libacl-devel
 BuildRequires:  libselinux-devel
 BuildRequires:  libcap-devel
@@ -30,6 +30,7 @@ BuildRequires:  xmlsec1-devel xmlsec1-openssl-devel
 %if %{?_with_check:1}%{!?_with_check:0}
 BuildRequires:  perl-XML-XPath
 BuildRequires:  bzip2
+BuildRequires:  python3-dbusmock
 %endif
 Requires:       bash
 Requires:       bzip2-libs
@@ -126,13 +127,10 @@ Tool for scanning Atomic containers.
 
 %build
 %undefine __cmake_in_source_build
-# gconf is a legacy system not used any more, and it blocks testing of oscap-anaconda-addon
-# as gconf is no longer part of the installation medium
 %cmake \
     -DENABLE_PERL=OFF \
-    -DENABLE_DOCS=ON \
-    -DOPENSCAP_PROBE_UNIX_GCONF=OFF \
-    -DGCONF_LIBRARY=
+    -DWITH_CRYPTO=nss \
+    -DENABLE_DOCS=ON
 %cmake_build
 make docs
 
@@ -147,7 +145,11 @@ ctest -V %{?_smp_mflags}
 find $RPM_BUILD_ROOT -name '*.la' -exec rm -f {} ';'
 
 # fix python shebangs
+%if 0%{?rhel} >= 10 || 0%{?fedora}
+%{__python3} %{_rpmconfigdir}/redhat/pathfix.py -i %{__python3} -p -n $RPM_BUILD_ROOT%{_bindir}/scap-as-rpm
+%else
 pathfix.py -i %{__python3} -p -n $RPM_BUILD_ROOT%{_bindir}/scap-as-rpm
+%endif
 
 %ldconfig_scriptlets
 
@@ -203,3 +205,4 @@ pathfix.py -i %{__python3} -p -n $RPM_BUILD_ROOT%{_bindir}/scap-as-rpm
 %{python3_sitelib}/oscap_docker_python/*
 %{_bindir}/oscap-podman
 %{_mandir}/man8/oscap-podman.8*
+

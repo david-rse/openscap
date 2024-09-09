@@ -64,9 +64,9 @@
 }
 
 %typemap(in) void * {
-    $result = SWIG_ConvertPtr($input,%as_voidptrptr(&$1), 0, $disown);
-    if (!SWIG_IsOK($result)) {
-        %argument_fail($result, "$type", $symname, $argnum);
+    int ptrres = SWIG_ConvertPtr($input,%as_voidptrptr(&$1), 0, $disown);
+    if (!SWIG_IsOK(ptrres)) {
+        %argument_fail(ptrres, "$type", $symname, $argnum);
     }
 }
 
@@ -196,20 +196,6 @@
 %include "../../src/CPE/public/cpe_dict.h"
 %include "../../src/CPE/public/cpe_lang.h"
 
-
-%module openscap
-%{
- #include "../../src/CVE/public/cve_nvd.h"
-%}
-%include "../../src/CVE/public/cve_nvd.h"
-
-
-%module openscap
-%{
- #include "../../src/CVSS/public/cvss_score.h"
-%}
-%include "../../src/CVSS/public/cvss_score.h"
-
 %module openscap
 %{
  #include "../../src/DS/public/ds_rds_session.h"
@@ -332,7 +318,7 @@ int rule_result_output_callback_wrapper(struct xccdf_rule_result* rule_result, v
       PyGILState_Release(state);
       return 1;
     }
-    result = PyEval_CallObject(func,arglist);
+    result = PyObject_CallObject(func,arglist);
     if (result == NULL) {
         if (PyErr_Occurred() != NULL)
             PyErr_PrintEx(0);
@@ -369,7 +355,7 @@ int rule_start_callback_wrapper(struct xccdf_rule* rule, void *arg)
       PyGILState_Release(state);
       return 1;
     }
-    result = PyEval_CallObject(func,arglist);
+    result = PyObject_CallObject(func,arglist);
     if (result == NULL) {
         if (PyErr_Occurred() != NULL)
             PyErr_PrintEx(0);
@@ -406,7 +392,7 @@ int agent_reporter_callback_wrapper(const struct oval_result_definition* res_def
       PyGILState_Release(state);
       return 1;
     }
-    result = PyEval_CallObject(func,arglist);
+    result = PyObject_CallObject(func,arglist);
     if (result == NULL) {
         if (PyErr_Occurred() != NULL)
             PyErr_PrintEx(0);
@@ -441,7 +427,7 @@ int validate_callback_wrapper(const char* file, int line, const char* msg, void 
       PyGILState_Release(state);
       return 1;
     }
-    result = PyEval_CallObject(func,arglist);
+    result = PyObject_CallObject(func,arglist);
     if (result == NULL) {
         if (PyErr_Occurred() != NULL)
             PyErr_PrintEx(0);
@@ -475,9 +461,9 @@ char * sub_callback_wrapper(xccdf_subst_type_t type, const char *id, void *arg)
     arglist = Py_BuildValue("isO", type, id, usrdata);
     if (!PyCallable_Check(func)) {
       PyGILState_Release(state);
-      return 1;
+      return NULL;
     }
-    result = PyEval_CallObject(func, arglist);
+    result = PyObject_CallObject(func, arglist);
     if (result == NULL) {
         if (PyErr_Occurred() != NULL)
             PyErr_PrintEx(0);
@@ -509,7 +495,6 @@ char * sub_callback_wrapper(xccdf_subst_type_t type, const char *id, void *arg)
 
 bool xccdf_policy_model_register_output_callback_py(struct xccdf_policy_model *model, PyObject *func, PyObject *usr) {
     struct internal_usr *new_usrdata;
-    PyEval_InitThreads();
     Py_INCREF(func);
     Py_INCREF(usr);
     new_usrdata = malloc(sizeof(struct internal_usr));
@@ -523,7 +508,6 @@ bool xccdf_policy_model_register_output_callback_py(struct xccdf_policy_model *m
 
 bool xccdf_policy_model_register_start_callback_py(struct xccdf_policy_model *model, PyObject *func, PyObject *usr) {
     struct internal_usr *new_usrdata;
-    PyEval_InitThreads();
     Py_INCREF(func);
     Py_INCREF(usr);
     new_usrdata = malloc(sizeof(struct internal_usr));
@@ -537,7 +521,6 @@ bool xccdf_policy_model_register_start_callback_py(struct xccdf_policy_model *mo
 
 int oval_agent_eval_system_py(oval_agent_session_t * asess, PyObject * func, PyObject *usr) {
     struct internal_usr *new_usrdata;
-    PyEval_InitThreads();
     Py_INCREF(func);
     Py_INCREF(usr);
     new_usrdata = malloc(sizeof(struct internal_usr));
@@ -559,8 +542,7 @@ struct xccdf_session {
 };
 
 void xccdf_session_set_rule_py(struct xccdf_session  *sess, char *rule) {
-    char *n_rule = strdup(rule);
-    xccdf_session_set_rule(sess, n_rule);
+    xccdf_session_set_rule(sess, rule);
 }
 
 void xccdf_session_free_py(struct xccdf_session *sess){

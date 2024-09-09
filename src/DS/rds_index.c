@@ -31,8 +31,7 @@
 #include "common/elements.h"
 #include "common/debug_priv.h"
 #include "rds_index_priv.h"
-#include "source/oscap_source_priv.h"
-#include "source/public/oscap_source.h"
+
 
 #include <libxml/xmlreader.h>
 #include <string.h>
@@ -116,6 +115,9 @@ struct rds_report_request_index* rds_index_get_report_request(struct rds_index* 
 struct rds_asset_index* rds_index_get_asset(struct rds_index *rds, const char *id)
 {
 	struct rds_asset_index *ret = NULL;
+
+	if (id == NULL)
+		return ret;
 
 	struct rds_asset_index_iterator *it = rds_index_get_assets(rds);
 	while (rds_asset_index_iterator_has_more(it))

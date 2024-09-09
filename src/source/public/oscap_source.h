@@ -96,6 +96,12 @@ OSCAP_API struct oscap_source *oscap_source_clone(struct oscap_source *old);
 OSCAP_API void oscap_source_free(struct oscap_source *source);
 
 /**
+ * Dispose oscap_source xmlDoc structure.
+ * @param source Resource to dispose xmlDoc structure from
+ */
+OSCAP_API void oscap_source_free_xmlDoc(struct oscap_source *source);
+
+/**
  * Get filepath of the given resource
  * @memberof oscap_source
  * @param source
@@ -136,11 +142,10 @@ OSCAP_API int oscap_source_validate(struct oscap_source *source, xml_reporter re
  * Validate the SCAP document against schematron assertions
  * @memberof oscap_source
  * @param source The oscap_source to validate
- * @param outfile path to out file containing errors, NULL for stdout
  * @note The held resource has to be XML for this function to work.
  * @returns 0 on pass; 1 on fail, and -1 on internal error
  */
-OSCAP_API int oscap_source_validate_schematron(struct oscap_source *source, const char *outfile);
+OSCAP_API int oscap_source_validate_schematron(struct oscap_source *source);
 
 /**
  * Returns human readable description of oscap_source origin
@@ -159,6 +164,15 @@ OSCAP_API const char *oscap_source_readable_origin(const struct oscap_source *so
  * @returns 0 on success, 1 or -1 to indicate error
  */
 OSCAP_API int oscap_source_save_as(struct oscap_source *source, const char *filename);
+
+/**
+ * Store the resource represented by oscap_source to the file descriptor.
+ * @memberof oscap_source
+ * @param source The oscap_source to save
+ * @param fd file descriptor
+ * @returns 0 on success, 1 or -1 to indicate error
+ */
+OSCAP_API int oscap_source_to_fd(struct oscap_source *source, int fd);
 
 /**
  * Retrieve contents refered to by oscap_source as raw memory.
